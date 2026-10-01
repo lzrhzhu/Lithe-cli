@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.5 (2026-10-01)
+
+The Windows release (paired with lithe 0.9.12): piped and redirected
+chat sessions survive on Windows.
+
+- **piped chat no longer crashes on Windows** — prompt_toolkit's
+  Windows console backend needs a real screen buffer and raises
+  `NoConsoleScreenBufferError` when either stdout or stdin is a pipe or
+  redirect (POSIX degrades to plain-text output there). The chat line
+  now detects that case and falls back to the builtin `input()` with
+  ANSI stripped, so `lithe chat` works through pipes, `tee` and CI
+  instead of dying on the first prompt. Real terminals keep the full
+  prompt_toolkit editor.
+
 ## 0.6.4 (2026-09-30)
 
 The honest-copy release: selecting text in the conversation no longer
