@@ -330,12 +330,64 @@ def test_run_dashboard_shows_tools_todos_and_usage():
     assert state.tokens == 180 and state.cost == pytest.approx(0.003)
     assert state.input_tokens == 150 and state.output_tokens == 30
     assert state.cached_tokens == 85 and state.context_tokens == 50
+    assert state.last_turn_cost == pytest.approx(0.002)
     from lithe_cli.tui import _sidebar_lines
 
     usage_text = "\n".join(text for _, text in _sidebar_lines(state))
-    assert "输入 150 · 输出 30" in usage_text
-    assert "缓存输入 85" in usage_text
+    assert "输入 150" in usage_text and "输出 30" in usage_text
+    assert "缓存输入 85" in usage_text and "合计 180" in usage_text
+    assert "本轮费用 $0.0020" in usage_text
+    assert "累计费用 $0.0030" in usage_text
     assert "50 / 500 (10.0%)" in usage_text
+
+
+def test_sidebar_usage_is_one_metric_per_line():
+    from lithe_cli.tui import TuiState, _sidebar_lines
+
+    state = TuiState("模型", "/ws", 5)
+    state.on_event({"type": "run_start"})
+    state.on_event({
+        "type": "usage",
+        "prompt_tokens": 1200,
+        "completion_tokens": 340,
+        "cached_tokens": 900,
+        "total_tokens": 1540,
+        "cost": 0.0123,
+    })
+    lines = [text for _, text in _sidebar_lines(state)]
+    labels = ("输入 ", "输出 ", "缓存输入 ", "合计 ", "本轮费用 ", "累计费用 ")
+    usage = [line for line in lines if line.startswith(labels)]
+    for line in usage:
+        assert sum(line.startswith(label) for label in labels) == 1
+    assert len(usage) == 6
+    assert "输入 1,200" in lines and "输出 340" in lines
+    assert "缓存输入 900" in lines and "合计 1,540" in lines
+    assert "本轮费用 $0.0123" in lines and "累计费用 $0.0123" in lines
+
+
+def test_usage_from_a_round_that_died_without_done_is_kept():
+    from lithe_cli.tui import TuiState
+
+    state = TuiState("模型", "/ws", 5)
+    state.on_event({"type": "run_start"})
+    state.on_event({
+        "type": "usage",
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cost": 0.001,
+    })
+    state.on_event({"type": "error", "message": "host blew up before done"})
+    state.on_event({"type": "run_start"})
+    assert state.cost == pytest.approx(0.001)
+    assert state.input_tokens == 100 and state.tokens == 120
+    state.on_event({
+        "type": "done", "status": "done", "steps": 1,
+        "tokens": 60, "prompt_tokens": 50, "completion_tokens": 10,
+        "cost": 0.002,
+    })
+    assert state.cost == pytest.approx(0.003)
+    assert state.last_turn_cost == pytest.approx(0.002)
 
 
 def test_system_prompt_prefers_localized_file_edits_and_limits_todo_planning():

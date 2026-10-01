@@ -122,11 +122,13 @@ class TuiState:
         self.input_tokens = 0
         self.output_tokens = 0
         self.cached_tokens = 0
+        self.last_turn_cost = 0.0
         self._turn_tokens = 0
         self._turn_cost = 0.0
         self._turn_input_tokens = 0
         self._turn_output_tokens = 0
         self._turn_cached_tokens = 0
+        self._done_seen = True
         self.context_tokens = None
         self.context_window = None
         self.context_percent = None
@@ -176,14 +178,30 @@ class TuiState:
         self.input_tokens = 0
         self.output_tokens = 0
         self.cached_tokens = 0
+        self.last_turn_cost = 0.0
         self._turn_tokens = 0
         self._turn_cost = 0.0
         self._turn_input_tokens = 0
         self._turn_output_tokens = 0
         self._turn_cached_tokens = 0
+        self._done_seen = True
         self.context_tokens = None
         self.context_window = None
         self.context_percent = None
+
+    def _fold_turn(self) -> None:
+        """Fold the current turn's usage into session totals and clear it."""
+        self.input_tokens += self._turn_input_tokens
+        self.output_tokens += self._turn_output_tokens
+        self.cached_tokens += self._turn_cached_tokens
+        self.tokens += self._turn_tokens
+        self.cost += self._turn_cost
+        self.last_turn_cost = self._turn_cost
+        self._turn_tokens = 0
+        self._turn_cost = 0.0
+        self._turn_input_tokens = 0
+        self._turn_output_tokens = 0
+        self._turn_cached_tokens = 0
 
     def on_event(self, ev: dict) -> None:
         kind = ev.get("type")
@@ -191,11 +209,12 @@ class TuiState:
             self.status = "思考中"
             self.step = 0
             self.scroll = 0
-            self._turn_tokens = 0
-            self._turn_cost = 0.0
-            self._turn_input_tokens = 0
-            self._turn_output_tokens = 0
-            self._turn_cached_tokens = 0
+            # A previous round that died without a done event (host-level
+            # failure) still burned tokens: keep its measured usage instead
+            # of silently dropping it when the accumulators reset.
+            if not self._done_seen:
+                self._fold_turn()
+            self._done_seen = False
             self.context_tokens = None
             self.context_window = None
             self.context_percent = None
@@ -284,16 +303,8 @@ class TuiState:
                 self._turn_tokens = int(ev["tokens"])
             if ev.get("cost") is not None:
                 self._turn_cost = float(ev["cost"])
-            self.input_tokens += self._turn_input_tokens
-            self.output_tokens += self._turn_output_tokens
-            self.cached_tokens += self._turn_cached_tokens
-            self.tokens += self._turn_tokens
-            self.cost += self._turn_cost
-            self._turn_tokens = 0
-            self._turn_cost = 0.0
-            self._turn_input_tokens = 0
-            self._turn_output_tokens = 0
-            self._turn_cached_tokens = 0
+            self._done_seen = True
+            self._fold_turn()
             if ev.get("context_tokens") is not None:
                 self.context_tokens = int(ev["context_tokens"])
             if ev.get("context_window") is not None:
@@ -494,6 +505,10 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
     cached_tokens = state.cached_tokens + state._turn_cached_tokens
     tokens = state.tokens + state._turn_tokens
     cost = state.cost + state._turn_cost
+    if state.running or not state._done_seen:
+        turn_cost = state._turn_cost
+    else:
+        turn_cost = state.last_turn_cost
     context = "—"
     if state.context_tokens is not None:
         context = f"{state.context_tokens:,}"
@@ -504,9 +519,12 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
     lines.extend(
         [
             ("dim", "◆ 会话用量"),
-            ("", f"输入 {input_tokens:,} · 输出 {output_tokens:,}"),
+            ("", f"输入 {input_tokens:,}"),
+            ("", f"输出 {output_tokens:,}"),
             ("", f"缓存输入 {cached_tokens:,}"),
-            ("", f"合计 {tokens:,} · ${cost:.4f}"),
+            ("", f"合计 {tokens:,}"),
+            ("", f"本轮费用 ${turn_cost:.4f}"),
+            ("", f"累计费用 ${cost:.4f}"),
             ("", f"上下文 {context}"),
         ]
     )
