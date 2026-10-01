@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -139,16 +141,54 @@ def load_saved_endpoint() -> dict:
     }
 
 
+def _restrict_to_owner(path: Path, directory: bool = False) -> None:
+    if os.name != "nt":
+        try:
+            path.chmod(0o700 if directory else 0o600)
+        except OSError:
+            pass
+        return
+    icacls = shutil.which("icacls")
+    if not icacls:
+        raise OSError("icacls is required to protect the saved API key on Windows")
+    account = os.environ.get("USERDOMAIN")
+    username = os.environ.get("USERNAME")
+    owner = f"{account}\\{username}" if account and username else username
+    if not owner:
+        raise OSError("unable to determine current Windows account for API key ACL")
+    permissions = f"{owner}:(OI)(CI)(F)" if directory else f"{owner}:(F)"
+    try:
+        reset = subprocess.run(
+            [icacls, str(path), "/reset"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+        if reset.returncode:
+            raise OSError(f"failed to reset access to {path}")
+        result = subprocess.run(
+            [icacls, str(path), "/inheritance:r", "/grant:r", permissions],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(f"failed to restrict access to {path}") from exc
+    if result.returncode:
+        raise OSError(f"failed to restrict access to {path}")
+
+
 def save_endpoint(api_key: str, base_url: str, model: str) -> Path:
-    """Write the config file; 0600 because it holds the API key."""
+    """Write the config file with owner-only access where supported."""
     path = config_file()
     fresh_dir = not path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     if fresh_dir:
-        try:
-            path.parent.chmod(0o700)
-        except OSError:
-            pass
+        _restrict_to_owner(path.parent, directory=True)
+    path.touch(exist_ok=True)
+    _restrict_to_owner(path)
     payload = {
         k: v
         for k, v in (("api_key", api_key), ("base_url", base_url), ("model", model))
@@ -156,10 +196,6 @@ def save_endpoint(api_key: str, base_url: str, model: str) -> Path:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
     return path
 
 

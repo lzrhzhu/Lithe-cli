@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 from lithe_cli import __version__
@@ -463,19 +464,55 @@ def test_conversation_pane_scrolls_back_and_clamps():
     text = "\n".join("".join(f[1] for f in row) for row in rows)
     assert "第 29 行" in text and "第 0 行" not in text
 
-    state.scroll = 10**9  # Home: clamp to the very top
+    state.scroll = 10**9
     rows = conversation_rows(state, 60, 12)
     text = "\n".join("".join(f[1] for f in row) for row in rows)
     assert "第 0 行" in text and "第 29 行" not in text
     assert state.scroll == 30 - 10
 
-    state.scroll = 5  # mid viewport: last visible line is 10 lines above the tail
+    state.scroll = 5
     rows = conversation_rows(state, 60, 12)
     text = "\n".join("".join(f[1] for f in row) for row in rows)
     assert "第 15 行" in text and "第 24 行" in text and "第 29 行" not in text
 
-    state.on_event({"type": "run_start"})  # a new turn resumes following the tail
+    state.say("assistant", "追加内容")
+    rows = conversation_rows(state, 60, 12)
+    text = "\n".join("".join(f[1] for f in row) for row in rows)
+    assert "第 15 行" in text and "追加内容" not in text
+    assert state.scroll == 6
+
+    state.on_event({"type": "run_start"})
     assert state.scroll == 0
+
+
+def test_screen_supported_requires_interactive_input_and_output(monkeypatch):
+    from lithe_cli import tui
+
+    class Terminal:
+        def __init__(self, interactive):
+            self.interactive = interactive
+
+        def isatty(self):
+            return self.interactive
+
+    monkeypatch.setattr(tui.sys, "stdin", Terminal(False))
+    monkeypatch.setattr(tui.sys, "stdout", Terminal(True))
+    assert tui.screen_supported() is False
+    monkeypatch.setattr(tui.sys, "stdin", Terminal(True))
+    assert tui.screen_supported() is True
+
+
+def test_conversation_retains_more_than_four_hundred_feed_lines():
+    from lithe_cli.tui import TuiState, conversation_rows
+
+    state = TuiState("模型", "/工作区", 5)
+    for i in range(450):
+        state.say("assistant", f"历史行 {i}")
+    rows = conversation_rows(state, 60, 12)
+    text = "\n".join("".join(fragment[1] for fragment in row) for row in rows)
+    assert "历史行 0" not in text
+    assert "历史行 449" in text
+    assert len(state.feed) == 450
 
 
 def test_wrap_text_is_cjk_aware():
@@ -599,8 +636,19 @@ def test_saved_config_file_fills_endpoint(tmp_path, monkeypatch):
         "base_url": "https://file.example/api",
         "model": "file-model",
     }
-    st = path.stat()
-    assert st.st_mode & 0o777 == 0o600  # holds the key → private
+    if os.name == "nt":
+        import subprocess
+
+        result = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, check=True
+        )
+        acl = result.stdout.casefold()
+        owner = os.environ.get("USERNAME", "").casefold()
+        assert owner and f"{owner}:(f)" in acl
+        assert "everyone:" not in acl and "authenticated users:" not in acl
+    else:
+        st = path.stat()
+        assert st.st_mode & 0o777 == 0o600
 
     class Args:
         api_key = base_url = model = store = workspace = user = None
@@ -688,9 +736,10 @@ def test_wizard_saves_and_reports_cancel(tmp_path, monkeypatch, capsys):
 
 
 def _pty_run(code: str, feed: list[bytes], settle: float = 0.25):
-    """Fork a PTY, run `code`, feed byte chunks, return (output, exit_code)."""
+    """Fork a POSIX PTY, run `code`, feed byte chunks, return output and status."""
+    if os.name == "nt":
+        pytest.skip("POSIX PTY tests are unavailable on Windows")
     import fcntl
-    import os
     import pty
     import struct
     import sys

@@ -92,8 +92,12 @@ _SCROLL_STEP = 3
 
 
 def screen_supported() -> bool:
-    """The TUI needs a real terminal (never pipes, CI or dumb terms)."""
-    return sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+    """The TUI needs interactive input and output, never pipes or dumb terms."""
+    return (
+        sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and os.environ.get("TERM") != "dumb"
+    )
 
 
 class TuiState:
@@ -140,10 +144,24 @@ class TuiState:
 
     # -- feed ---------------------------------------------------------------
 
+    def _conversation_width(self) -> int | None:
+        if self._app is None or not self._app.is_running:
+            return None
+        cols, rows = _term_size(self._app)
+        (width, _), _ = body_layout(self, cols, rows - 3)
+        return max(1, width - 4)
+
+    def _wrapped_rows(self, text: str) -> int:
+        width = self._conversation_width()
+        if width is None:
+            return len(text.splitlines() or [""])
+        return len(wrap_text(text, width))
+
     def say(self, cls: str, text: str) -> None:
-        for line in str(text).splitlines() or [""]:
-            self.feed.append((cls, line))
-        del self.feed[:-400]
+        lines = str(text).splitlines() or [""]
+        self.feed.extend((cls, line) for line in lines)
+        if self.scroll:
+            self.scroll += sum(self._wrapped_rows(line) for line in lines)
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -187,11 +205,23 @@ class TuiState:
             self.step = int(ev.get("step") or 0)
             self.status = "思考中"
         elif kind == "assistant_delta":
-            self.streaming += str(ev.get("text") or "")
+            text = str(ev.get("text") or "")
+            if self.scroll and text:
+                self.scroll += (
+                    self._wrapped_rows(self.streaming + text)
+                    - self._wrapped_rows(self.streaming)
+                )
+            self.streaming += text
         elif kind == "assistant":
             text = str(ev.get("text") or "")
-            if text and not self.streaming:
-                self.say("assistant", text)
+            final_text = text or self.streaming
+            streamed_rows = self._wrapped_rows(self.streaming) if self.streaming else 0
+            if final_text:
+                lines = final_text.splitlines() or [""]
+                self.feed.extend(("assistant", line) for line in lines)
+                if self.scroll:
+                    final_rows = sum(self._wrapped_rows(line) for line in lines)
+                    self.scroll += final_rows - streamed_rows
             self.streaming = ""
         elif kind == "tool_call":
             name = str(ev.get("name") or "tool")
@@ -625,7 +655,10 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
         conversation_lexer.lines = styled_lines
         text = "\n".join("".join(value for _, value in row) for row in styled_lines)
         if conversation_buffer.text != text:
-            conversation_buffer.set_document(Document(text), bypass_readonly=True)
+            conversation_buffer.set_document(
+                Document(text, cursor_position=len(text)),
+                bypass_readonly=True,
+            )
 
     def _side_text():
         cols, rows = _term_size(state._app)
