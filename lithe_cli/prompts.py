@@ -13,6 +13,9 @@ used ``input``/``getpass``/readline are all upstream concerns now.
 
 from __future__ import annotations
 
+import re
+import sys
+
 from prompt_toolkit import prompt
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory, InMemoryHistory
@@ -26,6 +29,24 @@ _UTF8_HINT = (
     "\n  这行输入无法按 UTF-8 解码，已丢弃；"
     "请把终端与 locale 设为 UTF-8（如 export LANG=C.UTF-8）后重试。"
 )
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_line(message: str) -> str:
+    """Line input when prompt_toolkit cannot run: on Windows its console
+    backend (Win32Output/Windows10_Output) needs a real screen buffer and
+    raises NoConsoleScreenBufferError when either end is a pipe or redirect —
+    POSIX degrades to plain-text output there, Windows does not. No line
+    editing exists in a pipe anyway, so the builtin is enough."""
+    return input(_ANSI_RE.sub("", message))
+
+
+def _pipe_safe() -> bool:
+    """True when both ends are interactive and prompt_toolkit can own them."""
+    if sys.platform == "win32":
+        return sys.stdout.isatty() and sys.stdin.isatty()
+    return True
 
 
 def history_file():
@@ -47,6 +68,8 @@ def open_history() -> FileHistory:
 
 def chat_line(message: str, history) -> str:
     """The chat REPL prompt: colored, history-searchable, paste-safe."""
+    if not _pipe_safe():
+        return _plain_line(message)
     return prompt(
         ANSI(message),
         history=history,
