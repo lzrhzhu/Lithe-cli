@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.8.2 (2026-10-02)
+
+The in-session settings release: the per-turn capability knobs no longer
+need a restart, and they get the same picker UX as `/model`.
+
+- **`/set` + F5 settings picker** — `/set` lists the session-adjustable
+  knobs and opens the same modal picker `/model` uses (F5 opens it
+  directly in both frontends): `Enter` toggles a boolean row, numeric
+  items render as hints with their `/set 名称 值` usage. Typed forms set
+  anything: `/set shell on`, `/set code off`, `/set vision` (bare =
+  toggle), `/set max-steps 50`, `/set timeout 240`, `/set attempts 3`,
+  `/set stream on`, `/set verbose on`. Keys accept 序号 and underscore
+  aliases (`/set max_steps 50`); bad values get actionable errors.
+  Semantics match `/model`: edits hit the shared `cfg` and apply to the
+  **next turn** — turns already running keep their tool set; nothing is
+  persisted to the profile (session-scoped, like `/model` without
+  `--save`). Tool-affecting flips (`shell`/`code`/`vision`/`download`)
+  invalidate the `/tools` cache so the listing re-derives; turning
+  `shell` on restates its trust warning (current-user permissions, not
+  sandboxed, not undoable). Slash completion covers `/set` keys and
+  on/off. Deliberately not settable in-session: `--workspace`/`--store`/
+  `--user` (session identity), `--ui`/`--mcp` (process-scoped).
+
+## 0.8.1 (2026-10-02)
+
+The provider-preset release (paired with lithe 0.9.17): a profile can name
+a vendor instead of hand-writing its endpoint shape, and lithe's new
+400 diagnostics surface automatically.
+
+- **profile field `provider`** — a profile may set `"provider": "zai"`
+  instead of (or alongside) `base_url`: the vendor preset from
+  `lithe.bundles.providers` fills `base_url` when nothing explicit set it
+  and contributes `LLMConfig` defaults (transport, `extra_body`,
+  `default_headers`) under the profile's explicit values (dict fields merge
+  per key). `LITHE_PROVIDER` overrides the profile field. `config --list`
+  marks each profile with `[provider]`; `config --show` prints it. An
+  unknown provider fails loudly with the available presets — same policy
+  as an unknown `--profile`. Hand-editing config.json or `upsert(provider=
+  ...)` sets it; the wizard is unchanged this release.
+- **dependency floor `lithe>=0.9.17`** — the provider integration plus the
+  kernel's extra_body 400 diagnostics (a rejected vendor field now names
+  itself in the run's error event) come from that kernel.
+
 ## 0.8.0 (2026-10-02)
 
 The Textual release: the full-screen interface moves onto the Textual

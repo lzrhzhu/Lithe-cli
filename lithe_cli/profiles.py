@@ -59,6 +59,9 @@ def _clean_endpoint(data: dict) -> dict:
         v = data.get(k)
         if isinstance(v, str) and v.strip():
             out[k] = v.strip()
+    provider = data.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        out["provider"] = provider.strip()
     for k in ("context_window",):
         v = data.get(k)
         if isinstance(v, int) and v > 0:
@@ -169,6 +172,7 @@ class ProfileStore:
         api_key: str,
         model: str,
         context_window: int | None = None,
+        provider: str | None = None,
     ) -> Path:
         if not valid_name(name):
             raise SystemExit(
@@ -179,6 +183,8 @@ class ProfileStore:
                     "model": model.strip()}
         if context_window:
             endpoint["context_window"] = int(context_window)
+        if provider and provider.strip():
+            endpoint["provider"] = provider.strip()
         # keep a previously cached model list when the base_url is unchanged
         old = data["profiles"].get(name) or {}
         if old.get("cached_models") and old.get("base_url") == endpoint["base_url"]:

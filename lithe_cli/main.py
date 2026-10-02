@@ -454,9 +454,11 @@ def _cmd_config(args: Any) -> int:
         for name in names:
             ep = store.masked(name)
             mark = "*" if name == active else " "
+            prov = f" [{ep['provider']}]" if ep.get("provider") else ""
             print(
                 f"{mark} {ui.s(name, CYAN)} · {ep.get('model', '—')} "
                 f"@ {ep.get('base_url', '—')}（key {ep.get('api_key', '—')}）"
+                f"{prov}"
             )
         print(ui.s("（* 为当前档案；config --use NAME 切换）", YELLOW))
         return 0
@@ -482,6 +484,8 @@ def _cmd_config(args: Any) -> int:
             masked = key if len(key) <= 8 else f"{key[:5]}…{key[-4:]}"
             print(ui.kv("config", str(config_file())))
             print(ui.kv("profile", str(store.active_name() or "—")))
+            if saved.get("provider"):
+                print(ui.kv("provider", saved["provider"]))
             print(ui.kv("base_url", saved["base_url"]))
             print(ui.kv("api_key", masked))
             print(ui.kv("model", saved["model"]))

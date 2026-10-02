@@ -31,6 +31,28 @@ from .config import Config
 from .profiles import ProfileStore, fetch_models
 from .sessions import SessionManager, auto_title, format_session_rows
 
+# Session-adjustable settings for /set: (user key, cfg attr, label, kind).
+# Order is the /set display order. Only per-turn assembly inputs belong
+# here — workspace/store/user stay startup-level (session identity), and
+# --ui/--mcp are process-scoped. `kind` drives parsing: bool accepts
+# on/off/开/关 (bare invocation toggles); int/float require a value.
+_SETTING_DEFS: list[tuple[str, str, str, str]] = [
+    ("shell", "shell", "run_command（宿主 shell，不可撤销）", "bool"),
+    ("code", "code", "run_code / run_file（沙箱 Python）", "bool"),
+    ("vision", "vision", "image_info / analyze_image（图像理解）", "bool"),
+    ("download", "download", "download_file（网络下载）", "bool"),
+    ("stream", "stream", "流式输出 token", "bool"),
+    ("verbose", "verbose", "显示 usage / reasoning 事件", "bool"),
+    ("max-steps", "max_steps", "工具循环步数上限", "int"),
+    ("timeout", "timeout", "单次模型调用超时（秒）", "float"),
+    ("attempts", "attempts", "模型调用重试次数", "int"),
+]
+# Settings whose change alters the next turn's tool registry (vs. sampling
+# or rendering knobs): flipping them invalidates the /tools cache.
+_TOOL_AFFECTING = {"shell", "code", "vision", "download"}
+_TRUTHY = {"on", "true", "1", "开"}
+_FALSY = {"off", "false", "0", "关"}
+
 
 class Workbench:
     def __init__(self, cfg: Config):
@@ -392,6 +414,82 @@ class Workbench:
         self._emit(cid, {"type": "undo_done", "run_id": rid,
                          "reverted": reverted})
 
+    # -- session-adjustable settings (/set) -------------------------------------
+
+    def settings_rows(self) -> list[dict]:
+        """Current values of the /set-able knobs, in display order."""
+        return [
+            {"key": key, "label": label, "kind": kind,
+             "value": getattr(self.cfg, attr)}
+            for key, attr, label, kind in _SETTING_DEFS
+        ]
+
+    def _setting_def(self, key: str) -> tuple[str, str, str, str] | None:
+        """Resolve a /set argument (user key, underscore variant, or 序号)."""
+        norm = key.strip().lower().replace("_", "-")
+        for defn in _SETTING_DEFS:
+            if defn[0] == norm:
+                return defn
+        if key.strip().isdigit():
+            idx = int(key.strip()) - 1
+            if 0 <= idx < len(_SETTING_DEFS):
+                return _SETTING_DEFS[idx]
+        return None
+
+    def set_setting(self, key: str, value: str = "") -> ActionResult:
+        """Flip one /set-able knob on the shared cfg; applies next turn.
+
+        Booleans accept on/off (bare = toggle); numerics need a value.
+        Tool-affecting flips invalidate the /tools cache; turning shell on
+        restates its trust warning so the escalation is never silent.
+        """
+        result = ActionResult()
+        defn = self._setting_def(key)
+        if defn is None:
+            names = "、".join(d[0] for d in _SETTING_DEFS)
+            result.say("err", f"未知设置项 {key!r}（可用：{names}）")
+            return result
+        ukey, attr, label, kind = defn
+        current = getattr(self.cfg, attr)
+        if kind == "bool":
+            token = value.strip().lower()
+            if not token:
+                new = not current  # bare invocation toggles
+            elif token in _TRUTHY:
+                new = True
+            elif token in _FALSY:
+                new = False
+            else:
+                result.say("err", f"{ukey} 是开关：on / off（不带值则为切换）")
+                return result
+        else:
+            if not value.strip():
+                result.say("err", f"用法：/set {ukey} 值（当前 {current}）")
+                return result
+            try:
+                new = int(value.strip()) if kind == "int" else float(value.strip())
+            except ValueError:
+                result.say("err", f"{ukey} 需要一个{'整数' if kind == 'int' else '数值'}")
+                return result
+            if kind == "int" and new < 1 or kind == "float" and new <= 0:
+                result.say("err", f"{ukey} 必须为正数")
+                return result
+        if new == current:
+            result.say("dim", f"{label}：已是 {new}")
+            return result
+        setattr(self.cfg, attr, new)
+        if ukey in _TOOL_AFFECTING:
+            self._tool_names = None  # /tools must re-derive the registry
+            result.changed = True
+        shown = "on" if new is True else "off" if new is False else new
+        was = "on" if current is True else "off" if current is False else current
+        result.say("ok", f"{ukey}：{was} → {shown}，下一轮生效")
+        if ukey == "shell" and new is True:
+            result.say("warn", "run_command 以当前用户权限执行、非沙箱、结果不可撤销")
+        elif ukey == "code" and new is True:
+            result.say("dim", "（无 bubblewrap 的环境回退为非沙箱直通执行）")
+        return result
+
     # -- dispatch -----------------------------------------------------------------
 
     def dispatch(self, line: str) -> ActionResult:
@@ -480,6 +578,18 @@ class Workbench:
         if cmd == "undo":
             result.awaitable = lambda: self._undo(arg or None)
             return result
+        if cmd == "set":
+            if not arg:
+                for row in self.settings_rows():
+                    shown = "on" if row["value"] is True else \
+                        "off" if row["value"] is False else row["value"]
+                    result.say("dim",
+                               f"  {row['key']:<10} {str(shown):<6} {row['label']}")
+                result.say("dim", "（/set 名称 on|off 或 /set 序号；数值项 /set 名称 值）")
+                result.overlay = "set"
+                return result
+            key, _, value = arg.partition(" ")
+            return self.set_setting(key, value)
         if cmd == "sidebar":
             result.toggle_sidebar = True
             return result

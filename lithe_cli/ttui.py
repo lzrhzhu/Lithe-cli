@@ -131,8 +131,9 @@ def sidebar_markup(state: TuiState) -> str:
 
 def footer_text(state: TuiState) -> str:
     if state.running:
-        return f" ● {state.status} · Ctrl+C 取消 · F3 会话 · F4 模型 "
-    return f" ● {state.status} · Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · /help "
+        return f" ● {state.status} · Ctrl+C 取消 · F3 会话 · F4 模型 · F5 设置 "
+    return (f" ● {state.status} · Enter 发送 · F2 侧栏 · F3 会话 · F4 模型"
+            f" · F5 设置 · /help ")
 
 
 # -- input: completion + persistent history ------------------------------------
@@ -343,6 +344,7 @@ class LitheApp(App):
         Binding("f2", "toggle_sidebar", "侧栏", priority=True),
         Binding("f3", "open_sessions", "会话", priority=True),
         Binding("f4", "open_model", "模型", priority=True),
+        Binding("f5", "open_set", "设置", priority=True),
         Binding("ctrl+c", "cancel_or_exit", "取消/退出", priority=True),
     ]
 
@@ -585,7 +587,7 @@ class LitheApp(App):
             return
         if r.awaitable is not None:
             asyncio.create_task(r.awaitable())
-        if r.overlay in ("sessions", "model"):
+        if r.overlay in ("sessions", "model", "set"):
             self._open_picker(r.overlay)
         if r.overlay == "rebuild" and self._current_cid() is not None:
             self._activate(self._current_cid())
@@ -643,6 +645,27 @@ class LitheApp(App):
                 letter_actions={"s": "_picker_save_model",
                                 "r": "_picker_fetch_models"},
             ), self._model_picked)
+        elif name == "set":
+            items = []
+            for row in self.wb.settings_rows():
+                value = row["value"]
+                if row["kind"] == "bool":
+                    shown = "on" if value else "off"
+                    items.append((
+                        {"key": row["key"]},
+                        f"{'[green]●[/] ' if value else '○ '}"
+                        f"{row['key']:<10} {shown:<4}{row['label']}",
+                    ))
+                else:
+                    items.append((
+                        {"kind": "hint"},
+                        f"  {row['key']:<10} {value:<6}{row['label']}"
+                        f"（/set {row['key']} 值）",
+                    ))
+            self.push_screen(PickerModal(
+                "运行设置", items,
+                "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭",
+            ), self._set_picked)
 
     def action_open_sessions(self) -> None:
         if self.mode == "chat" and not isinstance(self.screen, PickerModal):
@@ -651,6 +674,23 @@ class LitheApp(App):
     def action_open_model(self) -> None:
         if not isinstance(self.screen, PickerModal):
             self._open_picker("model")
+
+    def action_open_set(self) -> None:
+        if not isinstance(self.screen, PickerModal):
+            self._open_picker("set")
+
+    def _set_picked(self, result) -> None:
+        if not result or result[0] != "select" or not result[1]:
+            return
+        payload = result[1]
+        if payload.get("kind") == "hint":
+            return
+        r = self.wb.set_setting(payload["key"], "toggle")
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        if r.changed:
+            self._refresh_meta()
+            self._refresh_chrome()
 
     def _sessions_picked(self, result) -> None:
         if not result:

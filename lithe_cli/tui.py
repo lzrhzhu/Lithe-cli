@@ -727,6 +727,30 @@ def models_overlay_items(
     return items
 
 
+def settings_overlay_items(setting_rows: list[dict]) -> list[dict]:
+    """Items for the /set picker: booleans are selectable (Enter toggles),
+    numerics render as hints — a value cannot be picked from a list."""
+    items: list[dict] = []
+    for row in setting_rows:
+        value = row["value"]
+        if row["kind"] == "bool":
+            shown = "on" if value else "off"
+            items.append({
+                "kind": "item",
+                "label": f"{'●' if value else '○'} {row['key']:<10} {shown:<4}"
+                         f"{row['label']}",
+                "key": row["key"],
+                "active": bool(value),
+            })
+        else:
+            items.append({"kind": "hint",
+                          "label": f"  {row['key']:<10} {value:<6}{row['label']}"
+                                   f"（/set {row['key']} 值）"})
+    items.append({"kind": "hint",
+                  "label": "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭"})
+    return items
+
+
 def picker_rows(state: TuiState, width: int, height: int) -> list[list]:
     """The modal picker panel that replaces the body while an overlay is open.
 
@@ -788,6 +812,13 @@ class SlashCompleter(Completer):
             words = self.state.profile_names
         elif command == "resume":
             words = [f"#{row['id']}" for row in self.state.sessions]
+        elif command == "set":
+            from .workbench import _SETTING_DEFS
+
+            words = [d[0] for d in _SETTING_DEFS]
+            if arg.strip() and " " not in arg.strip():
+                # second word: boolean on/off offers itself
+                words = words + ["on", "off"]
         for word in words:
             if word.startswith(arg) and word != arg:
                 yield Completion(word, start_position=-len(arg))
@@ -907,6 +938,7 @@ def build_app(
     # -- pickers: modal navigation while an overlay is open -------------------
     kb.add("f3")(lambda event: on_line("/sessions"))
     kb.add("f4")(lambda event: on_line("/model"))
+    kb.add("f5")(lambda event: on_line("/set"))
 
     @kb.add("escape", filter=overlay_open, eager=True)
     @kb.add("q", filter=overlay_open, eager=True)
@@ -1017,9 +1049,9 @@ def build_app(
         elif mode == "run":
             hint = " q 退出 · F2 侧栏 " if not state.running else " Ctrl+C 取消 · PgUp/PgDn 滚动 "
         elif state.running:
-            hint = " Ctrl+C 取消本轮 · F3 会话 · F4 模型 "
+            hint = " Ctrl+C 取消本轮 · F3 会话 · F4 模型 · F5 设置 "
         else:
-            hint = " Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · /help 命令 "
+            hint = " Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · /help 命令 "
         return FormattedText(compose_footer(state, cols, hint))
 
     def _prompt_text():
@@ -1226,6 +1258,11 @@ async def run_screen(cfg, task, mode, args=None):
                     cfg.profile, cfg.model, wb.model_candidates(),
                 ),
             )
+        elif name == "set":
+            state.open_overlay(
+                "set", "运行设置",
+                settings_overlay_items(wb.settings_rows()),
+            )
 
     def _after_switch():
         cid = _current_cid()
@@ -1244,6 +1281,9 @@ async def run_screen(cfg, task, mode, args=None):
                 _say_result(wb.set_profile(item["profile"]))
             _say_result(wb.set_model(item["model"]))
             _refresh_meta(state)
+        elif name == "set":
+            # Enter on a boolean row toggles it (same call /set 名称 makes)
+            _say_result(wb.set_setting(item["key"], "toggle"))
 
     def on_overlay_key(name, key):
         if name == "sessions":
@@ -1302,7 +1342,7 @@ async def run_screen(cfg, task, mode, args=None):
             return
         if r.awaitable is not None:
             asyncio.create_task(r.awaitable())
-        if r.overlay in ("sessions", "model"):
+        if r.overlay in ("sessions", "model", "set"):
             _open_picker(r.overlay)
         if r.overlay == "rebuild":
             _after_switch()

@@ -206,3 +206,90 @@ def test_corrupt_profile_file_reads_empty(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text("{oops", encoding="utf-8")
     assert ProfileStore().names() == []
     assert ProfileStore().endpoint() == {}
+
+
+# --- provider presets -------------------------------------------------------
+
+class _PresetArgs:
+    api_key = base_url = model = profile = provider = None
+    store = workspace = user = None
+    skills = mcp = None
+    context_window = None
+    download = code = shell = vision = color = no_color = verbose = False
+
+
+def test_provider_preset_fills_base_url_and_build_llm(tmp_path, monkeypatch):
+    from lithe_cli.agent import build_llm
+    from lithe_cli.config import ENV_PROVIDER, load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", ENV_PROVIDER):
+        monkeypatch.delenv(var, raising=False)
+    # 档案只写 provider + 凭据 + 模型：base_url 由 preset 补齐
+    ProfileStore().upsert("myzai", "", "sk-z", "glm-4.6", provider="zai")
+
+    cfg = load_config(_PresetArgs())
+    assert cfg.provider == "zai"
+    assert cfg.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert cfg.has_endpoint, "preset 补齐 base_url 后即视为完整端点"
+
+    llm = build_llm(cfg)
+    assert llm.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert llm.model == "glm-4.6" and llm.transport == "chat"
+
+
+def test_provider_preset_explicit_values_win(tmp_path, monkeypatch):
+    from lithe_cli.agent import build_llm
+    from lithe_cli.config import ENV_PROVIDER, load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", ENV_PROVIDER):
+        monkeypatch.delenv(var, raising=False)
+    # 档案手写了 base_url：显式值覆盖 preset
+    ProfileStore().upsert("proxy", "https://my-proxy.example/v1", "sk-z",
+                          "glm-4.6", provider="zai", context_window=128000)
+
+    cfg = load_config(_PresetArgs())
+    assert cfg.base_url == "https://my-proxy.example/v1"
+    llm = build_llm(cfg)
+    assert llm.base_url == "https://my-proxy.example/v1"
+    assert llm.context_window == 128000
+
+
+def test_provider_via_env_beats_profile_field(tmp_path, monkeypatch):
+    from lithe_cli.config import ENV_PROVIDER, load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    ProfileStore().upsert("a", "", "sk", "m", provider="zai")
+    monkeypatch.setenv(ENV_PROVIDER, "deepseek")
+    cfg = load_config(_PresetArgs())
+    assert cfg.provider == "deepseek"
+    assert cfg.base_url == "https://api.deepseek.com"
+
+
+def test_unknown_provider_dies_loudly(tmp_path, monkeypatch):
+    from lithe_cli.config import ENV_PROVIDER, load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", ENV_PROVIDER):
+        monkeypatch.delenv(var, raising=False)
+    ProfileStore().upsert("bad", "", "sk", "m", provider="nonexistent")
+    with pytest.raises(SystemExit, match="未知 provider"):
+        load_config(_PresetArgs())
+
+
+def test_endpoint_roundtrips_provider_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    store.upsert("zai", "", "sk", "glm-4.6", provider="zai")
+    fresh = ProfileStore()  # re-read from disk
+    assert fresh.endpoint("zai")["provider"] == "zai"
+    # 无 provider 的档案不受影响
+    store.upsert("plain", "https://p.example", "sk", "m")
+    assert "provider" not in fresh.endpoint("plain")

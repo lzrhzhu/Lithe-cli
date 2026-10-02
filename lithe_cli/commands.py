@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "model": ("[名称|--save]", "查看/切换模型（F4 同效）；--save 同时存为档案默认"),
     "models": ("", "从端点拉取模型列表并缓存"),
     "profile": ("[名称]", "查看/切换 provider 档案"),
+    "set": ("[名称] [值]", "查看/调整运行设置（F5 同效）；开关项回车或 on/off，下一轮生效"),
     "tools": ("", "列出已注册的工具"),
     "undo": ("[run]", "撤销当前会话最近一轮（或指定 run）的文件改动"),
     "sidebar": ("", "显示/隐藏右侧状态栏（F2 同效）"),
@@ -47,7 +48,7 @@ class ActionResult:
     action: str = "none"  # none | submit | exit
     text: str = ""  # submit payload
     messages: list[tuple[str, str]] = field(default_factory=list)
-    overlay: str | None = None  # TUI picker: "sessions" | "model"
+    overlay: str | None = None  # TUI picker: "sessions" | "model" | "set"
     toggle_sidebar: bool = False
     changed: bool = False  # model/session changed → refresh banner/sidebar
     # Zero-arg coroutine the frontend must run: plain → asyncio.run,

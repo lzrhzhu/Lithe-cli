@@ -33,10 +33,19 @@ The config file holds **named profiles** — several endpoints, one active:
   "profiles": {
     "zhipu": {"base_url": "https://…", "api_key": "…", "model": "glm-4.6",
                "context_window": 128000, "cached_models": ["glm-4.6"]},
-    "openrouter": {"base_url": "https://…", "api_key": "…", "model": "…"}
+    "zai-preset": {"provider": "zai", "api_key": "…", "model": "glm-4.6"}
   }
 }
 ```
+
+A profile may set `"provider"` instead of (or alongside) `base_url`: the
+vendor preset from `lithe.bundles.providers` fills `base_url` when unset
+and contributes `LLMConfig` defaults (transport, `extra_body`,
+`default_headers`) **under** your explicit values — you write the key and
+model, the preset knows the endpoint shape. `LITHE_PROVIDER` overrides the
+profile field; `config --list` / `--show` display it; an unknown name fails
+loudly with the available presets (openai / zai / deepseek / openrouter /
+qwen / moonshot).
 
 ```bash
 lithe config                 # wizard (edits the active profile)
@@ -113,16 +122,17 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 ╰──────────────────────────────────────╯╰──────────────────────────╯
  Tab 采纳 → /model  /models  /new
  lithe ❯ _
- ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · /help
+ ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · /help
 ```
 
 **Switch without leaving the screen**: `F3` opens the session picker
 (`Enter` switch, `n` new, `d` delete, `r` rename), `F4` the model picker
 (grouped by profile; `Enter` switch, `s` save as the profile's default,
-`r` fetch `/models`). Switching away from a running session does **not**
+`r` fetch `/models`), and `F5` the settings picker (`Enter` toggles a
+capability; see below). Switching away from a running session does **not**
 cancel it — its badge stays lit and the pane rebuilds from the store when
 you come back. Typing `/` shows matching commands above the prompt (`Tab`
-accepts; `/model`, `/profile`, `/resume` complete their arguments too),
+accepts; `/model`, `/profile`, `/set` complete their arguments too),
 and `↑`/`↓` recall the persistent input history. `Ctrl+C` cancels the
 current turn and exits when idle.
 
@@ -150,6 +160,18 @@ resume (unless `--model`/env pinned). Inside chat, the same operations
 are slash commands: `/sessions`, `/resume 12`, `/new [标题]`,
 `/rename 标题`, `/model glm-4.5 [--save]`, `/profile zhipu`,
 `/models`, `/undo`, `/tools`, `/sidebar`, `/help`, `/exit`.
+
+### In-session settings
+
+The per-turn knobs don't need a restart: `/set` (or `F5`) opens a picker
+where `Enter` toggles a capability, and typed forms set anything —
+`/set shell on`, `/set code off`, `/set vision`, `/set max-steps 50`,
+`/set timeout 240`, `/set attempts 3`, `/set stream on`, `/set verbose`.
+Settings apply to the **next turn** (the running turn keeps its own tool
+set), stay session-scoped (nothing is written to the profile), and
+turning `shell` on restates its trust warning. `/tools` re-derives the
+registry after a capability flip, so the listing always matches what the
+next turn will see.
 
 ### Extra capabilities
 

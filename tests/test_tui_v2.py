@@ -11,6 +11,7 @@ from lithe_cli.tui import (
     models_overlay_items,
     picker_rows,
     sessions_overlay_items,
+    settings_overlay_items,
     transcript_feed_lines,
 )
 from lithe_cli.ui import display_width
@@ -102,6 +103,23 @@ def test_models_overlay_items_groups_by_profile():
     or_models = [i["model"] for i in items
                  if i["kind"] == "item" and i["profile"] == "or"]
     assert or_models == ["sonnet-4"]
+
+
+def test_settings_overlay_items_toggles_and_hints():
+    items = settings_overlay_items([
+        {"key": "shell", "label": "run_command（宿主 shell）", "kind": "bool",
+         "value": True},
+        {"key": "vision", "label": "图像理解", "kind": "bool", "value": False},
+        {"key": "max-steps", "label": "步数上限", "kind": "int", "value": 35},
+    ])
+    selectable = [i for i in items if i["kind"] == "item"]
+    assert [i["key"] for i in selectable] == ["shell", "vision"]
+    assert "●" in selectable[0]["label"] and "on" in selectable[0]["label"]
+    assert "○" in selectable[1]["label"] and "off" in selectable[1]["label"]
+    # 数值项不可选，以 hint 呈现并带用法提示
+    hints = [i["label"] for i in items if i["kind"] == "hint"]
+    assert any("max-steps" in h and "35" in h and "/set" in h for h in hints)
+    assert "Enter" in items[-1]["label"]
 
 
 def test_picker_rows_fit_and_highlight_cursor():

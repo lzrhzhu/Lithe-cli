@@ -259,6 +259,83 @@ def test_plain_dispatch_submits_and_exit(tmp_path):
     assert "write_file" in r.messages[0][1]
 
 
+# --- /set: session-adjustable settings ------------------------------------------
+
+def test_set_bare_lists_current_values_and_opens_picker(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/set")
+    text = "".join(t for _, t in r.messages)
+    assert "shell" in text and "max-steps" in text and "35" in text
+    assert r.overlay == "set"
+
+
+def test_set_bool_toggle_and_explicit_values(tmp_path):
+    wb = _wb(tmp_path, [])
+    wb._tool_names = ["stale"]  # 预填缓存，翻转后必须失效
+
+    r = wb.dispatch("/set shell on")
+    assert wb.cfg.shell is True
+    assert r.messages[0][0] == "ok" and "下一轮生效" in r.messages[0][1]
+    assert any("不可撤销" in t for c, t in r.messages), "shell 开启要重述信任警示"
+    assert wb._tool_names is None, "影响工具集的设置要清空 /tools 缓存"
+
+    r = wb.dispatch("/set shell")  # 不带值 = 切换
+    assert wb.cfg.shell is False
+
+    r = wb.dispatch("/set vision true")
+    assert wb.cfg.vision is True and r.messages[0][0] == "ok"
+    r = wb.dispatch("/set vision 0")
+    assert wb.cfg.vision is False
+
+    # 关到已是 off 的值：友好提示，不算错误
+    r = wb.dispatch("/set vision off")
+    assert wb.cfg.vision is False and r.messages[0][0] == "dim"
+
+    r = wb.dispatch("/set shell maybe")
+    assert r.messages[0][0] == "err" and wb.cfg.vision is False
+
+
+def test_set_by_index_and_underscore_alias(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/set 1 on")  # 序号 1 = shell
+    assert wb.cfg.shell is True
+    r = wb.dispatch("/set max_steps 50")  # 下划线别名
+    assert wb.cfg.max_steps == 50
+    r = wb.dispatch("/set 99 on")
+    assert r.messages[0][0] == "err" and "可用" in r.messages[0][1]
+
+
+def test_set_numeric_validation(tmp_path):
+    wb = _wb(tmp_path, [])
+    wb.dispatch("/set max-steps 50")
+    assert wb.cfg.max_steps == 50
+    wb.dispatch("/set timeout 30.5")
+    assert wb.cfg.timeout == 30.5
+    wb.dispatch("/set attempts 3")
+    assert wb.cfg.attempts == 3
+    # 缺值 / 非数值 / 非法数值都有可行动的报错
+    assert wb.dispatch("/set max-steps").messages[0][0] == "err"
+    assert wb.dispatch("/set max-steps abc").messages[0][0] == "err"
+    assert wb.dispatch("/set timeout -1").messages[0][0] == "err"
+    assert wb.cfg.max_steps == 50 and wb.cfg.timeout == 30.5
+
+
+def test_set_unknown_key_lists_available(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/set turbo on")
+    assert r.messages[0][0] == "err" and "shell" in r.messages[0][1]
+
+
+def test_set_tools_cache_reflected_in_next_tools_listing(tmp_path):
+    wb = _wb(tmp_path, [])
+    wb.dispatch("/tools")                 # 填充缓存
+    assert wb._tool_names is not None and "run_command" not in wb._tool_names
+    wb.dispatch("/set shell on")          # 缓存失效
+    assert wb._tool_names is None
+    r = wb.dispatch("/tools")             # 重新派生，包含 shell 工具
+    assert "run_command" in r.messages[0][1]
+
+
 def test_undo_targets_last_session_run(tmp_path):
     wb = _wb(tmp_path, WRITE_THEN_ANSWER + [{"content": "完成"}])
     wb.open()

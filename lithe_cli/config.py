@@ -38,6 +38,7 @@ ENV_MODEL = "LITHE_MODEL"
 ENV_HOME = "LITHE_HOME"
 ENV_MCP = "LITHE_MCP"
 ENV_PROFILE = "LITHE_PROFILE"
+ENV_PROVIDER = "LITHE_PROVIDER"
 
 DEFAULT_USER = "cli"
 
@@ -52,6 +53,10 @@ class Config:
     # Which saved profile the endpoint came from (display / doctor / TUI);
     # None when the endpoint is env/flag-only or nothing is saved.
     profile: str | None = None
+    # Optional vendor preset name (profile field "provider" or LITHE_PROVIDER):
+    # fills base_url when unset and contributes LLMConfig defaults (transport,
+    # extra_body, ...) under the user's explicit values. See lithe.bundles.providers.
+    provider: str | None = None
     store_dir: Path = field(default_factory=lambda: default_store_dir())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
     user_id: str = DEFAULT_USER
@@ -130,7 +135,7 @@ def config_file() -> Path:
 
 
 def load_saved_endpoint() -> dict:
-    """Read the active profile's {api_key, base_url, model}; {} if none.
+    """Read the active profile's {api_key, base_url, model, provider}; {} if none.
 
     A corrupt file is treated as absent — a bad edit should cost the user
     one re-prompt, not a broken CLI.
@@ -138,7 +143,8 @@ def load_saved_endpoint() -> dict:
     from .profiles import ProfileStore
 
     endpoint = ProfileStore().endpoint()
-    return {k: endpoint[k] for k in _ENDPOINT_KEYS if endpoint.get(k)}
+    keys = (*_ENDPOINT_KEYS, "provider")
+    return {k: endpoint[k] for k in keys if endpoint.get(k)}
 
 
 def _restrict_to_owner(path: Path, directory: bool = False) -> None:
@@ -229,15 +235,39 @@ def load_config(args: Any) -> Config:
         )
         if flag or os.environ.get(env)
     )
+    # Vendor preset (profile "provider" field > LITHE_PROVIDER): fills
+    # base_url when nothing explicit set it — the preset's whole point —
+    # while every explicit value stays untouched. An unknown name is a
+    # config typo: die loudly like an unknown --profile, listing options.
+    provider = (os.environ.get(ENV_PROVIDER) or saved.get("provider")
+                or g("provider", None))
+    base_url = (
+        g("base_url", None) or os.environ.get(ENV_BASE_URL)
+        or saved.get("base_url")
+    )
+    if provider and not base_url:
+        try:
+            from lithe.bundles.providers import get_preset
+
+            base_url = get_preset(provider).get("base_url")
+        except ValueError as exc:
+            # get_preset's message already lists the known providers.
+            raise SystemExit(
+                f"{exc}。可手写 base_url，或从上述 preset 中选择。"
+            ) from exc
+        if not base_url:
+            raise SystemExit(
+                f"provider {provider!r} 的 preset 未提供 base_url；"
+                f"请在档案中手写 base_url。"
+            )
     return Config(
         api_key=(
             g("api_key", None) or os.environ.get(ENV_API_KEY) or saved.get("api_key")
         ),
-        base_url=(
-            g("base_url", None) or os.environ.get(ENV_BASE_URL) or saved.get("base_url")
-        ),
+        base_url=base_url,
         model=(g("model", None) or os.environ.get(ENV_MODEL) or saved.get("model")),
         profile=active,
+        provider=provider,
         store_dir=store_dir,
         workspace_dir=workspace_dir,
         user_id=g("user", None) or DEFAULT_USER,

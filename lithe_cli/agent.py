@@ -88,16 +88,35 @@ def build_system_prompt(cfg: Config) -> str:
 
 
 def build_llm(cfg: Config) -> LLMConfig:
-    return LLMConfig(
-        model=cfg.model or "unused",
-        base_url=cfg.base_url or "unused",
-        api_key=cfg.api_key or "unused",
-        timeout=cfg.timeout,
-        attempts=cfg.attempts,
-        stream=cfg.stream,
-        context_window=cfg.context_window,
-        transport=cfg.transport,
-    )
+    """LLMConfig from the CLI config; a vendor preset (``provider``) acts as
+    defaults under the user's explicit values: transport / extra_body /
+    default_headers come from the preset unless the config says otherwise,
+    and dict fields merge per key."""
+    overrides = {
+        "model": cfg.model or "unused",
+        "base_url": cfg.base_url or "unused",
+        "api_key": cfg.api_key or "unused",
+        "timeout": cfg.timeout,
+        "attempts": cfg.attempts,
+        "stream": cfg.stream,
+        "context_window": cfg.context_window,
+    }
+    # The CLI's transport field defaults to "chat" and is only overridden by
+    # offline tests (custom transports); the default must not clobber a
+    # preset that knows better (e.g. a future "responses" preset).
+    if cfg.transport != "chat":
+        overrides["transport"] = cfg.transport
+    if cfg.provider:
+        from lithe.bundles.providers import apply_preset
+
+        try:
+            kwargs = apply_preset(cfg.provider, **overrides)
+        except ValueError as exc:
+            raise SystemExit(
+                f"{exc}。请修正档案里的 provider 字段，或清除它。"
+            ) from exc
+        return LLMConfig(**kwargs)
+    return LLMConfig(**overrides)
 
 
 def build_registry(cfg: Config) -> ToolRegistry:
