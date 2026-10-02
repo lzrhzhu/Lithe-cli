@@ -336,6 +336,69 @@ def test_set_tools_cache_reflected_in_next_tools_listing(tmp_path):
     assert "run_command" in r.messages[0][1]
 
 
+# --- /reasoning: in-session reasoning effort -------------------------------------
+
+def test_reasoning_bare_lists_levels_and_opens_picker(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/reasoning")
+    text = "".join(t for _, t in r.messages)
+    assert "当前推理强度：off" in text
+    for level in ("off", "minimal", "low", "medium", "high"):
+        assert level in text
+    assert r.overlay == "reasoning"
+
+
+def test_reasoning_set_off_and_verbatim(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/reasoning high")
+    assert wb.cfg.reasoning_effort == "high"
+    assert r.messages[0][0] == "ok" and "下一轮生效" in r.messages[0][1]
+
+    r = wb.dispatch("/reasoning off")
+    assert wb.cfg.reasoning_effort is None
+    assert "off" in r.messages[0][1]
+
+    # 不在档位里的值原样透传（个别模型的 none 等）
+    wb.dispatch("/reasoning none")
+    assert wb.cfg.reasoning_effort == "none"
+
+    # 序号选择：2 → minimal
+    wb.dispatch("/reasoning off")
+    wb.dispatch("/reasoning 2")
+    assert wb.cfg.reasoning_effort == "minimal"
+    assert wb.dispatch("/reasoning 99").messages[0][0] == "err"
+
+
+def test_reasoning_save_persists_to_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    wb = _wb(tmp_path, [])
+    wb.profiles.upsert("zai", "", "sk", "glm-4.6", provider="zai")
+    wb.cfg.profile = "zai"
+    wb.dispatch("/reasoning high --save")
+    assert wb.profiles.endpoint("zai")["reasoning_effort"] == "high"
+    # off + --save 清除档案字段
+    wb.dispatch("/reasoning off --save")
+    assert "reasoning_effort" not in wb.profiles.endpoint("zai")
+
+
+def test_reasoning_effort_reaches_llm_config(tmp_path):
+    from lithe_cli.agent import build_llm
+
+    wb = _wb(tmp_path, [])
+    wb.dispatch("/reasoning high")
+    llm = build_llm(wb.cfg)
+    assert llm.reasoning_effort == "high"
+    wb.dispatch("/reasoning off")
+    assert build_llm(wb.cfg).reasoning_effort is None
+
+
+def test_set_listing_includes_reasoning_hint(tmp_path):
+    wb = _wb(tmp_path, [])
+    r = wb.dispatch("/set")
+    text = "".join(t for _, t in r.messages)
+    assert "reasoning-effort" in text and "/reasoning" in text
+
+
 def test_undo_targets_last_session_run(tmp_path):
     wb = _wb(tmp_path, WRITE_THEN_ANSWER + [{"content": "完成"}])
     wb.open()

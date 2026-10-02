@@ -62,6 +62,9 @@ def _clean_endpoint(data: dict) -> dict:
     provider = data.get("provider")
     if isinstance(provider, str) and provider.strip():
         out["provider"] = provider.strip()
+    effort = data.get("reasoning_effort")
+    if isinstance(effort, str) and effort.strip():
+        out["reasoning_effort"] = effort.strip()
     for k in ("context_window",):
         v = data.get(k)
         if isinstance(v, int) and v > 0:
@@ -206,6 +209,19 @@ class ProfileStore:
         if name not in data["profiles"]:
             return False
         data["profiles"][name]["model"] = model
+        self._save(data["active"], data["profiles"])
+        return True
+
+    def set_reasoning_effort(self, name: str, effort: str | None) -> bool:
+        """Set (or clear, with None/"off") a profile's reasoning effort."""
+        data = self.load()
+        if name not in data["profiles"]:
+            return False
+        endpoint = data["profiles"][name]
+        if effort is None or effort.strip().lower() == "off":
+            endpoint.pop("reasoning_effort", None)
+        else:
+            endpoint["reasoning_effort"] = effort.strip()
         self._save(data["active"], data["profiles"])
         return True
 

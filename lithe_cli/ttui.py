@@ -70,6 +70,8 @@ def sidebar_markup(state: TuiState) -> str:
     out.append("[dim]◆ 模型[/]")
     label = f"{state.profile} · {state.model}" if state.profile else state.model
     out.append(f"[cyan]{label}[/]")
+    if state.reasoning_effort:
+        out.append(f"[dim]推理 {state.reasoning_effort} · F6 切换[/]")
     if state.context_window:
         out.append(f"[dim]窗口 {state.context_window:,} · F4 切换[/]")
     else:
@@ -131,9 +133,9 @@ def sidebar_markup(state: TuiState) -> str:
 
 def footer_text(state: TuiState) -> str:
     if state.running:
-        return f" ● {state.status} · Ctrl+C 取消 · F3 会话 · F4 模型 · F5 设置 "
+        return f" ● {state.status} · Ctrl+C 取消 · F3 会话 · F4 模型 · F6 推理 "
     return (f" ● {state.status} · Enter 发送 · F2 侧栏 · F3 会话 · F4 模型"
-            f" · F5 设置 · /help ")
+            f" · F5 设置 · F6 推理 · /help ")
 
 
 # -- input: completion + persistent history ------------------------------------
@@ -345,6 +347,7 @@ class LitheApp(App):
         Binding("f3", "open_sessions", "会话", priority=True),
         Binding("f4", "open_model", "模型", priority=True),
         Binding("f5", "open_set", "设置", priority=True),
+        Binding("f6", "open_reasoning", "推理", priority=True),
         Binding("ctrl+c", "cancel_or_exit", "取消/退出", priority=True),
     ]
 
@@ -436,6 +439,7 @@ class LitheApp(App):
         st = self.state
         st.model = self.cfg.model or "(scripted)"
         st.profile = self.cfg.profile or ""
+        st.reasoning_effort = self.cfg.reasoning_effort
         if self.wb.current is not None:
             st.session_id = self.wb.current["id"]
             st.session_title = self.wb.current.get("title") or ""
@@ -587,7 +591,7 @@ class LitheApp(App):
             return
         if r.awaitable is not None:
             asyncio.create_task(r.awaitable())
-        if r.overlay in ("sessions", "model", "set"):
+        if r.overlay in ("sessions", "model", "set", "reasoning"):
             self._open_picker(r.overlay)
         if r.overlay == "rebuild" and self._current_cid() is not None:
             self._activate(self._current_cid())
@@ -666,6 +670,21 @@ class LitheApp(App):
                 "运行设置", items,
                 "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭",
             ), self._set_picked)
+        elif name == "reasoning":
+            current = self.cfg.reasoning_effort or "off"
+            items = []
+            for level in self.wb.REASONING_LEVELS:
+                active = level == current
+                label = {"off": "关闭（不发送该字段）"}.get(level, level)
+                items.append((
+                    {"level": level},
+                    f"{'[green]●[/] ' if active else ' '}{label}",
+                ))
+            self.push_screen(PickerModal(
+                "推理强度", items,
+                "Enter 应用 · s 存为档案默认 · Esc 关闭",
+                letter_actions={"s": "_picker_save_reasoning"},
+            ), self._reasoning_picked)
 
     def action_open_sessions(self) -> None:
         if self.mode == "chat" and not isinstance(self.screen, PickerModal):
@@ -678,6 +697,28 @@ class LitheApp(App):
     def action_open_set(self) -> None:
         if not isinstance(self.screen, PickerModal):
             self._open_picker("set")
+
+    def action_open_reasoning(self) -> None:
+        if not isinstance(self.screen, PickerModal):
+            self._open_picker("reasoning")
+
+    def _reasoning_picked(self, result) -> None:
+        if not result or result[0] != "select" or not result[1]:
+            return
+        r = self.wb.set_reasoning(result[1]["level"])
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._refresh_meta()
+        self._refresh_chrome()
+
+    def _picker_save_reasoning(self, payload) -> None:
+        if not payload:
+            return
+        r = self.wb.set_reasoning(payload.get("level", ""), save=True)
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._refresh_meta()
+        self._refresh_chrome()
 
     def _set_picked(self, result) -> None:
         if not result or result[0] != "select" or not result[1]:

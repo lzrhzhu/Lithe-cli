@@ -80,6 +80,10 @@ class Config:
     # Wire protocol ("chat" | "responses") or a custom LLMTransport instance.
     # Not exposed as a flag: the injection point for offline tests.
     transport: Any = "chat"
+    # Reasoning intensity (None = send nothing; "off" normalizes to None at
+    # load). Passed verbatim to the kernel's reasoning_effort — which values
+    # the current model accepts is the endpoint's call.
+    reasoning_effort: str | None = None
 
     @property
     def has_endpoint(self) -> bool:
@@ -260,6 +264,11 @@ def load_config(args: Any) -> Config:
                 f"provider {provider!r} 的 preset 未提供 base_url；"
                 f"请在档案中手写 base_url。"
             )
+    # Reasoning effort: flag > saved profile field; "off" normalizes to None
+    # (send nothing). An in-session /reasoning overrides both.
+    effort = g("reasoning_effort", None) or saved.get("reasoning_effort")
+    if effort is not None and effort.strip().lower() == "off":
+        effort = None
     return Config(
         api_key=(
             g("api_key", None) or os.environ.get(ENV_API_KEY) or saved.get("api_key")
@@ -268,6 +277,8 @@ def load_config(args: Any) -> Config:
         model=(g("model", None) or os.environ.get(ENV_MODEL) or saved.get("model")),
         profile=active,
         provider=provider,
+        reasoning_effort=(effort.strip() if isinstance(effort, str) and effort.strip()
+                          else None),
         store_dir=store_dir,
         workspace_dir=workspace_dir,
         user_id=g("user", None) or DEFAULT_USER,

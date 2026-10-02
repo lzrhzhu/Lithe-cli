@@ -293,3 +293,24 @@ def test_endpoint_roundtrips_provider_field(tmp_path, monkeypatch):
     # 无 provider 的档案不受影响
     store.upsert("plain", "https://p.example", "sk", "m")
     assert "provider" not in fresh.endpoint("plain")
+
+
+def test_reasoning_effort_profile_roundtrip(tmp_path, monkeypatch):
+    from lithe_cli.config import load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", "LITHE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    store = ProfileStore()
+    store.upsert("zai", "", "sk", "glm-4.6", provider="zai")
+    store.set_reasoning_effort("zai", "high")
+
+    cfg = load_config(_PresetArgs())
+    assert cfg.reasoning_effort == "high", "档案字段经 load_config 进入 cfg"
+
+    # "off" 归一化为不发（None），并存回时清除字段
+    store.set_reasoning_effort("zai", "off")
+    cfg = load_config(_PresetArgs())
+    assert cfg.reasoning_effort is None
+    assert "reasoning_effort" not in store.endpoint("zai")

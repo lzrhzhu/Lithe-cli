@@ -153,6 +153,7 @@ class TuiState:
         self.context_tokens = None
         self.context_window = None
         self.context_percent = None
+        self.reasoning_effort: str | None = None
         self.tools: list[dict] = []
         self.feed: list[tuple[str, str]] = []
         self.streaming = ""
@@ -566,6 +567,8 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
     lines.append(("dim", "◆ 模型"))
     label = f"{state.profile} · {state.model}" if state.profile else state.model
     lines.append(("", truncate(label, 30)))
+    if state.reasoning_effort:
+        lines.append(("dim", f"推理 {state.reasoning_effort} · F6 切换"))
     if state.context_window:
         lines.append(("dim", f"窗口 {state.context_window:,} · F4 切换"))
     else:
@@ -727,6 +730,26 @@ def models_overlay_items(
     return items
 
 
+def reasoning_overlay_items(current: str | None,
+                             levels: tuple[str, ...]) -> list[dict]:
+    """Items for the /reasoning picker: one selectable row per level."""
+    cur = current or "off"
+    items: list[dict] = []
+    for level in levels:
+        active = level == cur
+        label = {"off": "关闭（不发送该字段）"}.get(level, level)
+        items.append({
+            "kind": "item",
+            "label": f"{'●' if active else ' '} {label}",
+            "level": level,
+            "active": active,
+        })
+    items.append({"kind": "hint",
+                  "label": "Enter 应用 · s 存为档案默认 · Esc 关闭"
+                           "（个别模型支持其它值，可用 /reasoning 值 直达）"})
+    return items
+
+
 def settings_overlay_items(setting_rows: list[dict]) -> list[dict]:
     """Items for the /set picker: booleans are selectable (Enter toggles),
     numerics render as hints — a value cannot be picked from a list."""
@@ -812,6 +835,10 @@ class SlashCompleter(Completer):
             words = self.state.profile_names
         elif command == "resume":
             words = [f"#{row['id']}" for row in self.state.sessions]
+        elif command == "reasoning":
+            from .workbench import REASONING_LEVELS
+
+            words = list(REASONING_LEVELS)
         elif command == "set":
             from .workbench import _SETTING_DEFS
 
@@ -939,6 +966,7 @@ def build_app(
     kb.add("f3")(lambda event: on_line("/sessions"))
     kb.add("f4")(lambda event: on_line("/model"))
     kb.add("f5")(lambda event: on_line("/set"))
+    kb.add("f6")(lambda event: on_line("/reasoning"))
 
     @kb.add("escape", filter=overlay_open, eager=True)
     @kb.add("q", filter=overlay_open, eager=True)
@@ -1049,9 +1077,10 @@ def build_app(
         elif mode == "run":
             hint = " q 退出 · F2 侧栏 " if not state.running else " Ctrl+C 取消 · PgUp/PgDn 滚动 "
         elif state.running:
-            hint = " Ctrl+C 取消本轮 · F3 会话 · F4 模型 · F5 设置 "
+            hint = " Ctrl+C 取消本轮 · F3 会话 · F4 模型 · F6 推理 "
         else:
-            hint = " Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · /help 命令 "
+            hint = (" Enter 发送 · F2 侧栏 · F3 会话 · F4 模型"
+                    " · F5 设置 · F6 推理 · /help 命令 ")
         return FormattedText(compose_footer(state, cols, hint))
 
     def _prompt_text():
@@ -1167,6 +1196,7 @@ async def run_screen(cfg, task, mode, args=None):
     def _refresh_meta(st):
         st.model = cfg.model or "(scripted)"
         st.profile = cfg.profile or ""
+        st.reasoning_effort = cfg.reasoning_effort
         if wb.current is not None:
             st.session_id = wb.current["id"]
             st.session_title = wb.current.get("title") or ""
@@ -1263,6 +1293,12 @@ async def run_screen(cfg, task, mode, args=None):
                 "set", "运行设置",
                 settings_overlay_items(wb.settings_rows()),
             )
+        elif name == "reasoning":
+            state.open_overlay(
+                "reasoning", "推理强度",
+                reasoning_overlay_items(cfg.reasoning_effort,
+                                        wb.REASONING_LEVELS),
+            )
 
     def _after_switch():
         cid = _current_cid()
@@ -1284,6 +1320,9 @@ async def run_screen(cfg, task, mode, args=None):
         elif name == "set":
             # Enter on a boolean row toggles it (same call /set 名称 makes)
             _say_result(wb.set_setting(item["key"], "toggle"))
+        elif name == "reasoning":
+            _say_result(wb.set_reasoning(item["level"]))
+            _refresh_meta(state)
 
     def on_overlay_key(name, key):
         if name == "sessions":
@@ -1316,6 +1355,13 @@ async def run_screen(cfg, task, mode, args=None):
                         _say_result(wb.set_profile(item["profile"]))
                     _say_result(wb.set_model(item["model"], save=True))
                     _refresh_meta(state)
+        elif name == "reasoning":
+            if key == "s":
+                item = state.overlay_current()
+                state.close_overlay()
+                if item:
+                    _say_result(wb.set_reasoning(item["level"], save=True))
+                    _refresh_meta(state)
 
     # -- input ----------------------------------------------------------------
 
@@ -1342,7 +1388,7 @@ async def run_screen(cfg, task, mode, args=None):
             return
         if r.awaitable is not None:
             asyncio.create_task(r.awaitable())
-        if r.overlay in ("sessions", "model", "set"):
+        if r.overlay in ("sessions", "model", "set", "reasoning"):
             _open_picker(r.overlay)
         if r.overlay == "rebuild":
             _after_switch()

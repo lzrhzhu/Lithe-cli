@@ -22,6 +22,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "rename": ("标题", "重命名当前会话"),
     "model": ("[名称|--save]", "查看/切换模型（F4 同效）；--save 同时存为档案默认"),
     "models": ("", "从端点拉取模型列表并缓存"),
+    "reasoning": ("[级别|--save]", "查看/设置推理强度（F6 同效）；off/minimal/low/medium/high，下一轮生效"),
     "profile": ("[名称]", "查看/切换 provider 档案"),
     "set": ("[名称] [值]", "查看/调整运行设置（F5 同效）；开关项回车或 on/off，下一轮生效"),
     "tools": ("", "列出已注册的工具"),

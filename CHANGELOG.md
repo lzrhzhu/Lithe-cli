@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.3 (2026-10-02)
+
+The reasoning-effort release (paired with lithe 0.9.18): a first-class
+推理强度 knob, switchable mid-session with the same picker UX as `/model`.
+
+- **`/reasoning` + F6 picker** — `/reasoning` lists the levels
+  (off / minimal / low / medium / high, ● marking the current one) and
+  opens the modal picker both frontends share; `Enter` applies, `s` saves
+  as the profile's default. Typed forms work too: `/reasoning high`,
+  `/reasoning 3` (index), `/reasoning none --save` (values outside the
+  offered set pass through verbatim — which levels a model accepts is the
+  endpoint's call, and a rejected value surfaces through the kernel's 400
+  diagnostics). `off` clears the knob (nothing is sent). Semantics match
+  `/model` and `/set`: applies to the next turn, session-scoped unless
+  `--save`.
+- **profile field `reasoning_effort`** — persisted via `--save` /
+  `set_reasoning_effort`; loading normalizes "off" to unset. The
+  `--reasoning-effort LEVEL` flag sets it per invocation (flag > profile).
+- **visibility** — the sidebar's 模型 section shows `推理 high · F6 切换`
+  when set (both frontends); `/set`'s listing includes the knob with a
+  pointer to `/reasoning`; slash completion covers the levels; footers
+  mention F6.
+- Depends on lithe 0.9.18: the kernel maps the knob per protocol
+  (`reasoning_effort` on chat, `reasoning.effort` on Responses,
+  deep-merged with `extra_body["reasoning"]` siblings like OpenRouter's
+  `max_tokens`/`exclude`).
+
 ## 0.8.2 (2026-10-02)
 
 The in-session settings release: the per-turn capability knobs no longer

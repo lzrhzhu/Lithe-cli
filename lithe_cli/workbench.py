@@ -46,12 +46,17 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
     ("max-steps", "max_steps", "工具循环步数上限", "int"),
     ("timeout", "timeout", "单次模型调用超时（秒）", "float"),
     ("attempts", "attempts", "模型调用重试次数", "int"),
+    ("reasoning-effort", "reasoning_effort",
+     "推理强度（off/minimal/low/medium/high，原样透传）", "enum"),
 ]
 # Settings whose change alters the next turn's tool registry (vs. sampling
 # or rendering knobs): flipping them invalidates the /tools cache.
 _TOOL_AFFECTING = {"shell", "code", "vision", "download"}
 _TRUTHY = {"on", "true", "1", "开"}
 _FALSY = {"off", "false", "0", "关"}
+# Reasoning levels offered by /reasoning; any other typed token passes
+# through verbatim (rare per-model values like "none" stay reachable).
+REASONING_LEVELS = ("off", "minimal", "low", "medium", "high")
 
 
 class Workbench:
@@ -258,6 +263,41 @@ class Workbench:
             self.sessions.set_meta(self.current["id"], {"model": name})
         return result
 
+    def set_reasoning(self, arg: str, *, save: bool = False) -> ActionResult:
+        """``/reasoning`` — view / set the reasoning-effort knob.
+
+        ``arg`` empty → listing + picker overlay; otherwise a level (or any
+        verbatim token); ``off`` clears. ``--save`` persists to the profile.
+        """
+        result = ActionResult()
+        arg = arg.strip()
+        if not arg:
+            current = self.cfg.reasoning_effort or "off"
+            result.say("dim", f"当前推理强度：{current}")
+            for i, level in enumerate(REASONING_LEVELS, 1):
+                mark = "●" if level == current else " "
+                result.say("dim", f" {mark} {i}. {level}")
+            result.say("dim", "（/reasoning 级别 或 /reasoning 序号；off 表示不发送"
+                              "该字段；--save 存为档案默认）")
+            result.overlay = "reasoning"
+            return result
+        if arg.isdigit():
+            idx = int(arg) - 1
+            if not 0 <= idx < len(REASONING_LEVELS):
+                result.say("err", f"序号超出范围（1–{len(REASONING_LEVELS)}）")
+                return result
+            arg = REASONING_LEVELS[idx]
+        r = self.set_setting("reasoning-effort", arg)
+        result.messages.extend(r.messages)
+        if r.messages and r.messages[0][0] == "ok" and save:
+            if self.cfg.profile:
+                self.profiles.set_reasoning_effort(
+                    self.cfg.profile, self.cfg.reasoning_effort)
+                result.say("ok", f"（已存为档案 {self.cfg.profile} 默认）")
+            else:
+                result.say("dim", "（没有已保存档案，--save 未生效）")
+        return result
+
     def set_profile(self, name: str) -> ActionResult:
         result = ActionResult(changed=True)
         try:
@@ -462,6 +502,17 @@ class Workbench:
             else:
                 result.say("err", f"{ukey} 是开关：on / off（不带值则为切换）")
                 return result
+        elif kind == "enum":
+            token = value.strip()
+            if not token:
+                known = "、".join(REASONING_LEVELS)
+                result.say("err", f"用法：/reasoning 级别（{known}；当前 "
+                                  f"{current or 'off'}）")
+                return result
+            # "off" clears the knob (nothing sent); other tokens pass
+            # through verbatim — which values the model accepts is the
+            # endpoint's call (400 diagnostics catch mistakes).
+            new = None if token.lower() == "off" else token
         else:
             if not value.strip():
                 result.say("err", f"用法：/set {ukey} 值（当前 {current}）")
@@ -475,14 +526,16 @@ class Workbench:
                 result.say("err", f"{ukey} 必须为正数")
                 return result
         if new == current:
-            result.say("dim", f"{label}：已是 {new}")
+            result.say("dim", f"{label}：已是 {new if new is not None else 'off'}")
             return result
         setattr(self.cfg, attr, new)
         if ukey in _TOOL_AFFECTING:
             self._tool_names = None  # /tools must re-derive the registry
             result.changed = True
-        shown = "on" if new is True else "off" if new is False else new
-        was = "on" if current is True else "off" if current is False else current
+        shown = "on" if new is True else "off" \
+            if new is False or new is None else new
+        was = "on" if current is True else "off" \
+            if current is False or current is None else current
         result.say("ok", f"{ukey}：{was} → {shown}，下一轮生效")
         if ukey == "shell" and new is True:
             result.say("warn", "run_command 以当前用户权限执行、非沙箱、结果不可撤销")
@@ -581,15 +634,23 @@ class Workbench:
         if cmd == "set":
             if not arg:
                 for row in self.settings_rows():
-                    shown = "on" if row["value"] is True else \
-                        "off" if row["value"] is False else row["value"]
+                    value = row["value"]
+                    shown = "on" if value is True else "off" \
+                        if value is False or value is None else value
+                    hint = "" if row["kind"] != "enum" \
+                        else "（/reasoning 或 F6 调整）"
                     result.say("dim",
-                               f"  {row['key']:<10} {str(shown):<6} {row['label']}")
+                               f"  {row['key']:<10} {str(shown):<6} "
+                               f"{row['label']}{hint}")
                 result.say("dim", "（/set 名称 on|off 或 /set 序号；数值项 /set 名称 值）")
                 result.overlay = "set"
                 return result
             key, _, value = arg.partition(" ")
             return self.set_setting(key, value)
+        if cmd == "reasoning":
+            save = "--save" in arg
+            level = arg.replace("--save", "").strip()
+            return self.set_reasoning(level, save=save)
         if cmd == "sidebar":
             result.toggle_sidebar = True
             return result

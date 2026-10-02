@@ -144,6 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument(
             "--attempts", type=int, default=2, help="per-call retry attempts"
         )
+        sp.add_argument(
+            "--reasoning-effort",
+            metavar="LEVEL",
+            default=None,
+            help="reasoning intensity (off/minimal/low/medium/high, model "
+            "dependent; profile field reasoning_effort; in-session /reasoning)",
+        )
 
     run_p = sub.add_parser("run", help="run one task")
     runtime(run_p)

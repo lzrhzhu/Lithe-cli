@@ -100,6 +100,7 @@ def build_llm(cfg: Config) -> LLMConfig:
         "attempts": cfg.attempts,
         "stream": cfg.stream,
         "context_window": cfg.context_window,
+        "reasoning_effort": cfg.reasoning_effort,
     }
     # The CLI's transport field defaults to "chat" and is only overridden by
     # offline tests (custom transports); the default must not clobber a

@@ -122,6 +122,21 @@ def test_settings_overlay_items_toggles_and_hints():
     assert "Enter" in items[-1]["label"]
 
 
+def test_reasoning_overlay_items_marks_current():
+    from lithe_cli.tui import reasoning_overlay_items
+    from lithe_cli.workbench import REASONING_LEVELS
+
+    items = reasoning_overlay_items("high", REASONING_LEVELS)
+    selectable = [i for i in items if i["kind"] == "item"]
+    assert [i["level"] for i in selectable] == list(REASONING_LEVELS)
+    active = [i for i in selectable if i.get("active")]
+    assert len(active) == 1 and active[0]["level"] == "high"
+    # None（未设置）时高亮 off
+    items = reasoning_overlay_items(None, REASONING_LEVELS)
+    assert [i["level"] for i in items if i.get("active")] == ["off"]
+    assert "s 存为档案默认" in items[-1]["label"]
+
+
 def test_picker_rows_fit_and_highlight_cursor():
     state = TuiState("m", "/ws", 5)
     items = [{"kind": "item", "label": f"选项 {i}"} for i in range(20)]

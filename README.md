@@ -173,6 +173,14 @@ turning `shell` on restates its trust warning. `/tools` re-derives the
 registry after a capability flip, so the listing always matches what the
 next turn will see.
 
+**Reasoning intensity**: `/reasoning` (or `F6`) picks a level —
+`off / minimal / low / medium / high`, or any value your model accepts
+(`none` on some) typed directly; `--save` persists it to the profile. The
+kernel maps it per protocol (`reasoning_effort` on chat-completions,
+`reasoning.effort` on Responses) and combines it with
+`extra_body["reasoning"]` siblings such as OpenRouter's
+`max_tokens`/`exclude`. The sidebar shows the active level when set.
+
 ### Extra capabilities
 
 The kernel ships these as bundles; the CLI grants them per flag:
