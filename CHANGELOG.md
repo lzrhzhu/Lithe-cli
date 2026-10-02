@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.4 (2026-10-02)
+
+The picker-repair release: the 0.8.2/0.8.3 pickers shipped with three
+defects that made F5 partially unusable, F6 a hard crash, and every
+Textual exit noisy. All found by headless F5/F6 regression tests.
+
+- **F6 crash** — the reasoning picker read the module constant as a
+  `Workbench` attribute (`wb.REASONING_LEVELS` → `AttributeError`) in
+  both frontends; Textual's traceback then masked the exit bug below.
+  Fixed by importing `REASONING_LEVELS` from `lithe_cli.workbench`
+  where the picker builds its rows.
+- **F5 crashes + dead toggles** — the settings picker formatted the
+  `reasoning-effort` row's `None` value with `{value:<6}`
+  (`TypeError`), so the modal never opened; and `Enter` on a boolean
+  row passed the literal token `"toggle"` to `set_setting`, which its
+  on/off parser rejects — every toggle errored with 是开关：on / off.
+  `None` now renders as `off`, and `Enter` calls `set_setting` bare
+  (empty value = toggle, same as `/set shell` without an argument).
+- **invisible confirmations** — the F5/F6 pickers appended their
+  应用/切换 messages to the feed but never called `_sync_feed()`, so
+  nothing appeared in the conversation pane until the next event.
+- **clean exit** — `main` wrapped the *sync* `run_textual_screen`
+  (which drives its own `asyncio.run`) in another `asyncio.run`,
+  raising `ValueError: a coroutine was expected, got 0` whenever the
+  Textual app exited — crashing after every F6-style in-app error.
+  Now called directly.
+
 ## 0.8.3 (2026-10-02)
 
 The reasoning-effort release (paired with lithe 0.9.18): a first-class

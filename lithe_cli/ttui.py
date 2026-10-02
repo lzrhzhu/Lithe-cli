@@ -661,9 +661,10 @@ class LitheApp(App):
                         f"{row['key']:<10} {shown:<4}{row['label']}",
                     ))
                 else:
+                    shown = "off" if value is None else value
                     items.append((
                         {"kind": "hint"},
-                        f"  {row['key']:<10} {value:<6}{row['label']}"
+                        f"  {row['key']:<10} {shown!s:<6}{row['label']}"
                         f"（/set {row['key']} 值）",
                     ))
             self.push_screen(PickerModal(
@@ -671,9 +672,11 @@ class LitheApp(App):
                 "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭",
             ), self._set_picked)
         elif name == "reasoning":
+            from .workbench import REASONING_LEVELS
+
             current = self.cfg.reasoning_effort or "off"
             items = []
-            for level in self.wb.REASONING_LEVELS:
+            for level in REASONING_LEVELS:
                 active = level == current
                 label = {"off": "关闭（不发送该字段）"}.get(level, level)
                 items.append((
@@ -710,6 +713,7 @@ class LitheApp(App):
             self.state.say(cls, text)
         self._refresh_meta()
         self._refresh_chrome()
+        self._sync_feed()
 
     def _picker_save_reasoning(self, payload) -> None:
         if not payload:
@@ -719,6 +723,7 @@ class LitheApp(App):
             self.state.say(cls, text)
         self._refresh_meta()
         self._refresh_chrome()
+        self._sync_feed()
 
     def _set_picked(self, result) -> None:
         if not result or result[0] != "select" or not result[1]:
@@ -726,12 +731,13 @@ class LitheApp(App):
         payload = result[1]
         if payload.get("kind") == "hint":
             return
-        r = self.wb.set_setting(payload["key"], "toggle")
+        r = self.wb.set_setting(payload["key"])  # bare value toggles booleans
         for cls, text in r.messages:
             self.state.say(cls, text)
         if r.changed:
             self._refresh_meta()
             self._refresh_chrome()
+        self._sync_feed()
 
     def _sessions_picked(self, result) -> None:
         if not result:

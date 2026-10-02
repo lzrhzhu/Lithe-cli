@@ -618,7 +618,8 @@ def _run_textual(cfg: Any, task: str | None, mode: str, args: Any) -> int:
             f"Textual 前端不可用（{exc}）。pip install textual，"
             "或用 --ui prompt 走旧版界面。"
         ) from exc
-    return asyncio.run(run_textual_screen(cfg, task, mode, args))
+    # run_textual_screen is sync: it drives its own asyncio.run inside.
+    return run_textual_screen(cfg, task, mode, args)
 
 
 def main(argv: list[str] | None = None) -> int:

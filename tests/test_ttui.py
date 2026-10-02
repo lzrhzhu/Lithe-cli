@@ -10,7 +10,13 @@ from conftest import _tc, make_config
 
 textual = pytest.importorskip("textual")
 
-from lithe_cli.ttui import LitheApp, footer_text, header_text, sidebar_markup  # noqa: E402
+from lithe_cli.ttui import (  # noqa: E402
+    LitheApp,
+    PickerModal,
+    footer_text,
+    header_text,
+    sidebar_markup,
+)
 from lithe_cli.tui import TuiState  # noqa: E402
 
 WRITE_THEN_ANSWER = [
@@ -306,3 +312,45 @@ def test_resolve_ui_defaults_to_textual(monkeypatch):
     assert _resolve_ui(args) == "prompt"  # flag beats env
     monkeypatch.setenv("LITHE_UI", "garbage")
     assert _resolve_ui(Args()) == "textual"  # unknown values fall back
+
+
+def test_f6_opens_reasoning_picker_and_applies(tmp_path):
+    """Regression: F6 crashed with AttributeError (wb.REASONING_LEVELS)."""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("f6")
+            await pilot.pause()
+            assert isinstance(app.screen, PickerModal)
+            levels = [p["level"] for p, _ in app.screen.items]
+            assert levels == ["off", "minimal", "low", "medium", "high"]
+            for _ in range(4):  # off -> high
+                await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.cfg.reasoning_effort == "high"
+
+    asyncio.run(scenario())
+
+
+def test_f5_settings_picker_toggles_bool(tmp_path):
+    """Regression: F5 crashed rendering the reasoning-effort row (None
+    value), and Enter on a bool row sent the literal token 'toggle',
+    which set_setting rejects — every toggle errored with 是开关."""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("f5")
+            await pilot.pause()
+            assert isinstance(app.screen, PickerModal)
+            keys = [p.get("key") for p, _ in app.screen.items]
+            assert keys[0] == "shell"  # first bool row
+            assert app.cfg.shell is False
+            await pilot.press("enter")  # toggle shell on
+            await pilot.pause()
+            assert app.cfg.shell is True
+            assert "shell：off → on" in _conv_text(app)
+
+    asyncio.run(scenario())

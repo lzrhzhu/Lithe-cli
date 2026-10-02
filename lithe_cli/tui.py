@@ -766,8 +766,9 @@ def settings_overlay_items(setting_rows: list[dict]) -> list[dict]:
                 "active": bool(value),
             })
         else:
+            shown = "off" if value is None else value
             items.append({"kind": "hint",
-                          "label": f"  {row['key']:<10} {value:<6}{row['label']}"
+                          "label": f"  {row['key']:<10} {shown!s:<6}{row['label']}"
                                    f"（/set {row['key']} 值）"})
     items.append({"kind": "hint",
                   "label": "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭"})
@@ -1294,10 +1295,12 @@ async def run_screen(cfg, task, mode, args=None):
                 settings_overlay_items(wb.settings_rows()),
             )
         elif name == "reasoning":
+            from .workbench import REASONING_LEVELS
+
             state.open_overlay(
                 "reasoning", "推理强度",
                 reasoning_overlay_items(cfg.reasoning_effort,
-                                        wb.REASONING_LEVELS),
+                                        REASONING_LEVELS),
             )
 
     def _after_switch():
