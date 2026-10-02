@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.0 (2026-10-02)
+
+The Textual release: the full-screen interface moves onto the Textual
+framework and becomes the default; the previous prompt_toolkit screen
+stays available as `--ui prompt` / `LITHE_UI=prompt`.
+
+- **Textual front-end by default** — layout, modals, scrolling and repaint
+  are framework-owned (the F2 sidebar toggle that motivated the switch no
+  longer goes through a hand-rolled diff over a swapped container tree).
+  Same Workbench backend, same five-section sidebar (会话 / 模型 / 运行 /
+  工具+待办 / 用量), same F3 session picker and F4 model picker (Enter /
+  n / d / r / s keys), busy badges, store-backed rebuild on switch-back.
+  `textual` is now a core dependency.
+- **inline command completion** — typing `/` shows matching commands above
+  the prompt; `Tab` accepts the first suggestion; `/model`, `/profile`
+  and `/resume` complete their arguments (cached models, saved profiles,
+  session ids).
+- **persistent input history** — ↑/↓ recall previous lines across turns
+  and processes, sharing the same FileHistory store as the plain REPL.
+- **legacy screen kept** — `--ui prompt` restores the prompt_toolkit
+  interface unchanged (including its in-app mouse selection + OSC 52
+  copy, which the Textual screen does not have; use the terminal's native
+  Shift+drag selection there).
+- **interaction tests on Windows** — the Textual screen is tested
+  headlessly via `App.run_test()` pilots (turn execution, F2/F3/F4,
+  history, completion), closing the gap where the old PTY tests skipped
+  on Windows.
+
 ## 0.7.0 (2026-10-02)
 
 The workbench release (paired with lithe 0.9.14): profiles, sessions,

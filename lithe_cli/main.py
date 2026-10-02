@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from typing import Any
 
@@ -111,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
         common(sp)
         sp.add_argument(
             "--stream", action="store_true", help="stream tokens as they generate"
+        )
+        sp.add_argument(
+            "--ui",
+            choices=["textual", "prompt"],
+            default=None,
+            help="full-screen frontend (env LITHE_UI; default: textual; "
+            "'prompt' is the legacy prompt_toolkit screen)",
         )
         sp.add_argument(
             "--no-setup",
@@ -584,6 +592,24 @@ def _chat_loop(
     return 0
 
 
+def _resolve_ui(args: Any) -> str:
+    """Which full-screen frontend: 'textual' (default) or 'prompt'."""
+    ui = getattr(args, "ui", None) or os.environ.get("LITHE_UI") or ""
+    ui = ui.strip().lower()
+    return ui if ui in ("prompt", "textual") else "textual"
+
+
+def _run_textual(cfg: Any, task: str | None, mode: str, args: Any) -> int:
+    try:
+        from .ttui import run_textual_screen
+    except ImportError as exc:  # pragma: no cover - depends on install
+        raise SystemExit(
+            f"Textual 前端不可用（{exc}）。pip install textual，"
+            "或用 --ui prompt 走旧版界面。"
+        ) from exc
+    return asyncio.run(run_textual_screen(cfg, task, mode, args))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
@@ -594,6 +620,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         require_endpoint(cfg, interactive=not args.no_setup)
         if screen_supported():
+            if _resolve_ui(args) == "textual":
+                return _run_textual(cfg, args.task, "run", args)
             from .tui import run_screen
 
             return asyncio.run(run_screen(cfg, args.task, "run"))
@@ -601,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chat":
         require_endpoint(cfg, interactive=not args.no_setup)
         if screen_supported():
+            if _resolve_ui(args) == "textual":
+                return _run_textual(cfg, None, "chat", args)
             from .tui import run_screen
 
             return asyncio.run(run_screen(cfg, None, "chat", args))

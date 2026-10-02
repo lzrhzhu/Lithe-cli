@@ -93,25 +93,27 @@ usage/context gauges; `--max-steps` caps the tool loop;
 ### Full-screen interface
 
 On an interactive terminal, `lithe chat` and `lithe run TASK` open a
-persistent full-screen interface instead of scribbling one-line events
-into the console. The left pane is the conversation; the right sidebar
-is five fixed sections — 会话（current + recent ones, `●` marks sessions
-with a turn still running）、模型、运行、工具/待办、用量:
+persistent full-screen interface (built on [Textual](https://textual.textualize.io))
+instead of scribbling one-line events into the console. The left pane is
+the conversation; the right sidebar is five fixed sections — 会话（current
++ recent ones, `●` marks sessions with a turn still running）、模型、运行、
+工具/待办、用量:
 
 ```text
- lithe 0.7.0 · zhipu · glm-4.6 │ ▣ #12 重构计划 │ ~/myproj    ● 运行中
-╭─ 对话 ──────────────────────────────╮╭─ 运行状态 ─────────╮
-│ 把 a.txt 改成三行待办清单            ││ ◆ 会话             │
-│ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●     │
-│ ✓ 编辑 a.txt（+3 -1 行） 0.0s       ││ #11 bugfix ✓ 7轮   │
-│ 已完成。                             ││ F3 切换 · /new 新建│
-│                                      ││ ◆ 模型             │
-│                                      ││ zhipu · glm-4.6    │
-│                                      ││ ◆ 会话用量         │
-│                                      ││ 输入 1,024 · 输出 216│
-╰──────────────────────────────────────╯╰─────────────────────╯
-lithe ❯ _
- ● 运行中 · 步骤 2/35   Enter 发送 · F3 会话 · F4 模型 · /help
+ lithe 0.8.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+╭──────────────────────────────────────╮╭──────────────────────────╮
+│ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
+│ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
+│ ✓ 编辑 a.txt（+3 -1 行） 0.0s       ││ #11 bugfix ✓ 7轮         │
+│ 已完成。                             ││ F3 切换 · /new 新建      │
+│                                      ││ ◆ 模型                   │
+│                                      ││ zhipu · glm-4.6          │
+│                                      ││ ◆ 会话用量               │
+│                                      ││ 输入 1,024 · 输出 216    │
+╰──────────────────────────────────────╯╰──────────────────────────╯
+ Tab 采纳 → /model  /models  /new
+ lithe ❯ _
+ ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · /help
 ```
 
 **Switch without leaving the screen**: `F3` opens the session picker
@@ -119,19 +121,16 @@ lithe ❯ _
 (grouped by profile; `Enter` switch, `s` save as the profile's default,
 `r` fetch `/models`). Switching away from a running session does **not**
 cancel it — its badge stays lit and the pane rebuilds from the store when
-you come back. Typing `/` pops an inline completion menu (commands, then
-model/profile names as arguments). `Ctrl+C` cancels the current turn,
-copies when a conversation selection is active, and exits when idle.
+you come back. Typing `/` shows matching commands above the prompt (`Tab`
+accepts; `/model`, `/profile`, `/resume` complete their arguments too),
+and `↑`/`↓` recall the persistent input history. `Ctrl+C` cancels the
+current turn and exits when idle.
 
-The conversation has an application-managed mouse selection: drag across
-its text and press `Ctrl+C` to copy only the selected conversation,
-without sidebar content. `Shift+drag` bypasses the application and uses
-the terminal's native selection, which can cross both panes; hide the
-sidebar with F2 or `/sidebar` before using native selection. The
-conversation scrolls with the mouse wheel, PageUp/PageDown and Home/End
-(a new turn jumps back to the output). Layout, wrapping and alignment
-are East-Asian-width aware; narrower terminals stack the two panes
-vertically. Pipes and CI keep the plain per-line output unchanged.
+Text selection uses the terminal's native `Shift+drag` (hide the sidebar
+with F2 first if it grabs both panes). The earlier prompt_toolkit screen —
+which adds in-app mouse selection and OSC 52 copy — remains available with
+`--ui prompt` / `LITHE_UI=prompt`. Pipes and CI keep the plain per-line
+output unchanged.
 
 ### Sessions
 
@@ -241,13 +240,14 @@ keys, inline wizard validation, and persistent history.
 
 - The CLI is a thin host over a `Workbench`: the workbench owns the
   endpoint view (profile + model), the session manager and the running
-  turns; the plain REPL and the full-screen TUI are both just
+  turns; the plain REPL and the full-screen Textual app are both just
   subscribers to its event bus and callers of one dispatcher. Everything
   else (ReAct loop, streaming, budgets, replay, undo engine) is reused
   from lithe.
-- End-to-end behavior is tested offline against a scripted transport — no
-  test spends tokens. The TUI's row builders are pure functions tested
-  headless; only key handling needs a real PTY (POSIX CI).
+- The Textual screen is tested headlessly with `App.run_test()` pilots
+  (turns, F2/F3/F4, history, completion) — real interaction tests that
+  also run on Windows; the legacy prompt_toolkit screen keeps its pure
+  row-builder tests plus POSIX-only PTY tests.
 - `python -m lithe_cli` works alongside the `lithe` console script.
 
 ## License
