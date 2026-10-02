@@ -2,20 +2,25 @@
 
 Subcommands:
   run TASK     one-shot task against the configured endpoint
-  chat         interactive session (history carried across turns)
+  chat         interactive session (persistent, switchable conversations)
+  sessions     list / rename / delete stored conversations
+  models       list the endpoint's models (GET /models)
   tools        list the tools this CLI registers
   runs         list stored runs
   log RUN_ID   show a stored run's messages and actions
   undo RUN_ID  revert a run's file/todo mutations
   doctor       show the effective configuration and capability status
-  config       interactive endpoint setup (first-run wizard; --show to peek)
+  config       interactive endpoint setup (first-run wizard; --list/--use/--model)
 
 Endpoint config: LITHE_API_KEY / LITHE_BASE_URL / LITHE_MODEL (flags
-override env, env overrides the wizard-saved $LITHE_HOME/config.json).
+override env, env overrides the active profile in $LITHE_HOME/config.json —
+see `lithe config --list`; --profile / LITHE_PROFILE pick another one).
 On a TTY, run/chat with no endpoint at all launch the setup wizard
 (--no-setup keeps the hard refusal for scripting). Storage lands in
 ~/.lithe/runs (LITHE_HOME to move it); the agent's workspace is the
-current directory unless --workspace says else.
+current directory unless --workspace says else. `lithe chat` conversations
+persist as kernel conversations: --continue resumes the latest, --resume
+ID|标题 picks one, and inside the TUI F3/F4 switch session/model live.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from lithe.bundles import JsonlRunStore
 
 from . import __version__
 from . import prompts
-from .agent import build_registry, execute, sandbox_backend, undo
+from .agent import build_registry, execute, render_event, sandbox_backend, undo
 from .config import config_file, load_config, require_endpoint
 from .prompts import open_history
 from .tui import screen_supported
@@ -53,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--api-key", help="endpoint API key (env LITHE_API_KEY)")
         sp.add_argument("--base-url", help="endpoint base URL (env LITHE_BASE_URL)")
         sp.add_argument("--model", help="model name (env LITHE_MODEL)")
+        sp.add_argument(
+            "--profile",
+            help="endpoint profile name (env LITHE_PROFILE; default: active "
+            "profile from lithe config --list)",
+        )
         sp.add_argument("--workspace", help="agent workspace dir (default: cwd)")
         sp.add_argument("--store", help="run store dir (default: ~/.lithe/runs)")
         sp.add_argument("--user", help="user id for the store (default: cli)")
@@ -133,6 +143,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat_p = sub.add_parser("chat", help="interactive session")
     runtime(chat_p)
+    chat_p.add_argument(
+        "-c",
+        "--continue",
+        dest="cont",
+        action="store_true",
+        help="resume the most recent conversation",
+    )
+    chat_p.add_argument(
+        "--resume",
+        metavar="ID|标题",
+        help="resume a specific conversation (id or unique title prefix)",
+    )
+    chat_p.add_argument("--title", help="title for a new conversation")
+
+    sessions_p = sub.add_parser("sessions", help="list conversations")
+    common(sessions_p)
+    sessions_p.add_argument("--limit", type=int, default=30)
+    sessions_p.add_argument("--rename", nargs=2, metavar=("ID", "TITLE"))
+    sessions_p.add_argument("--delete", metavar="ID")
+
+    models_p = sub.add_parser(
+        "models", help="list the endpoint's models (GET /models)"
+    )
+    common(models_p)
+    models_p.add_argument(
+        "--cached", action="store_true", help="show only the cached list, no network"
+    )
 
     tools_p = sub.add_parser("tools", help="list registered tools")
     common(tools_p)
@@ -157,7 +194,14 @@ def build_parser() -> argparse.ArgumentParser:
     config_p.add_argument(
         "--show",
         action="store_true",
-        help="print the saved config (key masked) and exit",
+        help="print the active profile's config (key masked) and exit",
+    )
+    config_p.add_argument(
+        "--list", action="store_true", help="list saved profiles and exit"
+    )
+    config_p.add_argument("--use", metavar="NAME", help="switch the active profile")
+    config_p.add_argument(
+        "--model", metavar="NAME", help="set the active profile's default model"
     )
 
     return p
@@ -224,11 +268,79 @@ def _cmd_log(cfg: Any, run_id: str) -> int:
     return 0
 
 
+def _cmd_sessions(cfg: Any, args: Any) -> int:
+    from .sessions import SessionManager, format_session_rows
+
+    mgr = SessionManager(JsonlRunStore(cfg.store_dir), cfg.user_id)
+    if args.rename:
+        ident, new_title = args.rename
+        row, err = mgr.resolve_exact(ident)
+        if row is None:
+            print(ui.s(err, RED))
+            return 1
+        mgr.rename(row["id"], new_title)
+        print(ui.s(f"✓ 会话 #{row['id']} → {new_title}", GREEN))
+        return 0
+    if args.delete:
+        row, err = mgr.resolve_exact(args.delete)
+        if row is None:
+            print(ui.s(err, RED))
+            return 1
+        mgr.delete(row["id"])
+        print(ui.s(f"✓ 已删除会话 #{row['id']}（runs 保留，lithe log 仍可查）", GREEN))
+        return 0
+    rows = mgr.list(limit=args.limit)
+    if not rows:
+        print(ui.s(f"（{cfg.store_dir} 下没有会话记录）", YELLOW))
+        return 0
+    for line in format_session_rows(rows, None, set()):
+        print(line)
+    print(ui.s("（chat --resume ID 可继续某个会话）", YELLOW))
+    return 0
+
+
+def _cmd_models(cfg: Any, cached_only: bool = False) -> int:
+    from .profiles import ProfileStore, fetch_models
+
+    if not (cfg.base_url and cfg.api_key):
+        print(ui.s("缺少 base_url/api_key，无法列出模型。", RED))
+        return 1
+    store = ProfileStore()
+    cached = None
+    if cfg.profile:
+        try:
+            cached = store.endpoint(cfg.profile).get("cached_models")
+        except SystemExit:
+            cached = None
+    if cached_only:
+        for name in cached or []:
+            print(name)
+        if not cached:
+            print(ui.s("（该档案还没有缓存的模型列表）", YELLOW))
+            return 0 if cached else 1
+        return 0
+    models = fetch_models(cfg.base_url, cfg.api_key)
+    if models is None:
+        print(ui.s(f"✗ 连不上 {cfg.base_url}/models", RED))
+        if cached:
+            print(ui.s("（使用上次缓存：）", YELLOW))
+            for name in cached:
+                print(name)
+        return 1
+    for name in models:
+        print(name)
+    if cfg.profile:
+        store.cache_models(cfg.profile, models)
+        print(ui.s(f"（已缓存到档案 {cfg.profile}，/model 与 F4 可离线选用）", YELLOW))
+    return 0
+
+
 def _cmd_doctor() -> int:
     from .config import default_skills_dir, load_saved_endpoint
+    from .profiles import ProfileStore
 
     class _Args:  # doctor reuses load_config over env-only defaults
-        api_key = base_url = model = store = workspace = user = None
+        api_key = base_url = model = profile = store = workspace = user = None
         skills = mcp = None
         download = code = shell = vision = color = no_color = verbose = False
 
@@ -255,6 +367,27 @@ def _cmd_doctor() -> int:
     else:
         state = ui.s("未保存（lithe-cli config 可交互配置）", YELLOW)
     print(ui.kv("config", f"{config_file()}（{state}）"))
+
+    profiles = ProfileStore().names()
+    if profiles:
+        active = cfg.profile
+        listing = "、".join(
+            (ui.s(n, GREEN) if n == active else n) for n in profiles
+        )
+        print(ui.kv("profiles", f"{listing}（config --use 切换）"))
+    else:
+        print(ui.kv("profiles", "未保存（lithe-cli config 配置）"))
+
+    try:
+        n_sessions = len(
+            JsonlRunStore(cfg.store_dir).list_conversations(
+                cfg.user_id, limit=10_000
+            )
+        )
+        sessions_line = f"{n_sessions} 个会话（chat --continue / --resume）"
+    except OSError as exc:
+        sessions_line = ui.s(f"读取失败：{exc}", RED)
+    print(ui.kv("sessions", sessions_line))
 
     try:
         n_runs = len(JsonlRunStore(cfg.store_dir).list_runs(cfg.user_id, limit=10_000))
@@ -295,17 +428,52 @@ def _cmd_run(cfg: Any, task: str) -> int:
     return 0 if done.get("status") == "done" else 1
 
 
-def _cmd_config(show: bool) -> int:
-    """`lithe-cli config [--show]`: run or inspect the endpoint wizard."""
+def _cmd_config(args: Any) -> int:
+    """`lithe-cli config`: inspect profiles or run the endpoint wizard."""
     from .config import load_saved_endpoint
+    from .profiles import ProfileStore
     from .setup import run_setup_wizard, stdin_is_interactive
 
+    store = ProfileStore()
+    if args.list:
+        names = store.names()
+        if not names:
+            print(ui.s(
+                f"（{config_file()} 尚未保存任何档案；"
+                "不带参数运行本命令进入交互配置）", YELLOW))
+            return 0
+        active = store.active_name()
+        for name in names:
+            ep = store.masked(name)
+            mark = "*" if name == active else " "
+            print(
+                f"{mark} {ui.s(name, CYAN)} · {ep.get('model', '—')} "
+                f"@ {ep.get('base_url', '—')}（key {ep.get('api_key', '—')}）"
+            )
+        print(ui.s("（* 为当前档案；config --use NAME 切换）", YELLOW))
+        return 0
+    if args.use:
+        if store.set_active(args.use):
+            print(ui.s(f"✓ 已切换档案：{args.use}", GREEN))
+            return 0
+        print(ui.s(f"未知档案 {args.use}（config --list 查看）", RED))
+        return 1
+    if args.model:
+        active = store.active_name()
+        if not active:
+            print(ui.s("没有已保存档案，先运行 lithe-cli config。", RED))
+            return 1
+        store.set_model(active, args.model)
+        print(ui.s(f"✓ 档案 {active} 默认模型 → {args.model}", GREEN))
+        return 0
+
     saved = load_saved_endpoint()
-    if show:
+    if args.show:
         if saved:
             key = saved["api_key"]
             masked = key if len(key) <= 8 else f"{key[:5]}…{key[-4:]}"
             print(ui.kv("config", str(config_file())))
+            print(ui.kv("profile", str(store.active_name() or "—")))
             print(ui.kv("base_url", saved["base_url"]))
             print(ui.kv("api_key", masked))
             print(ui.kv("model", saved["model"]))
@@ -329,18 +497,51 @@ def _cmd_config(show: bool) -> int:
     return 0 if run_setup_wizard() is not None else 1
 
 
-_CHAT_HELP = """可用命令：
-  /help   显示这段帮助
-  /tools  列出当前注册的工具
-  /new    清空会话历史，重新开始
-  /exit   退出（等同 /quit）"""
+_STYLE_MAP = {"ok": GREEN, "warn": YELLOW, "err": RED}
 
 
-def _chat_loop(cfg: Any) -> int:
-    store = JsonlRunStore(cfg.store_dir)
-    run_ids: list[str] = []
-    input_history = open_history()  # FileHistory under $LITHE_HOME, shared runs
+def _print_result_messages(messages) -> None:
+    for cls, text in messages:
+        style = _STYLE_MAP.get(cls)
+        print(ui.s(text, style) if style else text)
+
+
+def _chat_loop(
+    cfg: Any,
+    resume: str | None = None,
+    continue_latest: bool = False,
+    title: str | None = None,
+) -> int:
+    """Plain (non-TTY) chat: same Workbench and commands as the full screen."""
+    from .workbench import Workbench
+
+    wb = Workbench(cfg)
+    opening = wb.open(
+        resume=resume, continue_latest=continue_latest, title=title
+    )
+    _print_result_messages(opening.messages)
+    pending: dict[str, float] = {}
+
+    def _on_event(cid: int, ev: dict) -> None:
+        t = ev.get("type")
+        if t in ("session_busy", "session_idle"):
+            return
+        if t == "command_output":
+            _print_result_messages([(ev.get("style") or "", ev.get("text", ""))])
+            return
+        if t == "undo_done":
+            print(ui.s(f"✓ 已撤销 {ev.get('reverted', 0)} 个操作"
+                       f"（run {ev.get('run_id')}）", GREEN))
+            return
+        render_event(ev, cfg.verbose, cfg.stream, pending)
+        if t == "done":
+            if cfg.stream and pending.get("_deltas"):
+                print()  # close the streaming line before the footer
+            ui.footer(ev)
+
+    wb.subscribe(_on_event)
     print(ui.banner(__version__, cfg.model or "(scripted)", str(cfg.workspace_dir)))
+    input_history = open_history()  # FileHistory under $LITHE_HOME, shared runs
     while True:
         try:
             # prompt_toolkit owns the terminal: wide-char safe, paste-safe,
@@ -360,32 +561,26 @@ def _chat_loop(cfg: Any) -> int:
             continue
         if not line:
             continue
-        if line in ("/exit", "/quit", "exit", "quit"):
-            break
-        if line == "/help":
-            print(_CHAT_HELP)
-            continue
-        if line == "/tools":
-            _cmd_tools(cfg)
-            continue
-        if line == "/new":
-            run_ids.clear()
-            print(ui.s("（已清空会话历史）", YELLOW))
-            continue
-        if line.startswith("/"):
-            print(ui.s(f"未知命令 {line}（/help 查看可用命令）", RED))
-            continue
-        history = store.messages_for_runs(run_ids, cfg.user_id) if run_ids else None
         try:
-            # One asyncio.run per turn: each run is self-contained, and the
-            # blocking input() stays out of async context.
-            rid, done, _ = asyncio.run(execute(cfg, line, history=history))
-        except KeyboardInterrupt:
-            print("\n（已中断本轮；输入继续）")
+            r = wb.dispatch(line)
+        except SystemExit as exc:
+            print(ui.s(str(exc.code), RED))
             continue
-        run_ids.append(rid)
-        if done.get("status") != "done":
-            print(ui.s(f"（本轮状态：{done.get('status')}）", RED))
+        _print_result_messages(r.messages)
+        if r.toggle_sidebar:
+            print(ui.s("（纯文本模式没有侧栏；交互终端里按 F2）", YELLOW))
+        if r.action == "exit":
+            break
+        if r.awaitable is not None:
+            asyncio.run(r.awaitable())
+        if r.action == "submit":
+            try:
+                # One asyncio.run per turn: each run is self-contained, and the
+                # blocking input() stays out of async context.
+                asyncio.run(wb.run_turn(r.text))
+            except KeyboardInterrupt:
+                print("\n（已中断本轮；输入继续）")
+                continue
     return 0
 
 
@@ -408,20 +603,30 @@ def main(argv: list[str] | None = None) -> int:
         if screen_supported():
             from .tui import run_screen
 
-            return asyncio.run(run_screen(cfg, None, "chat"))
-        return _chat_loop(cfg)
+            return asyncio.run(run_screen(cfg, None, "chat", args))
+        return _chat_loop(
+            cfg,
+            resume=args.resume,
+            continue_latest=args.cont,
+            title=args.title,
+        )
     if args.command == "tools":
         return _cmd_tools(cfg)
+    if args.command == "sessions":
+        return _cmd_sessions(cfg, args)
+    if args.command == "models":
+        return _cmd_models(cfg, cached_only=args.cached)
     if args.command == "runs":
         return _cmd_runs(cfg, args.limit)
     if args.command == "log":
         return _cmd_log(cfg, args.run_id)
     if args.command == "undo":
-        return asyncio.run(undo(cfg, args.run_id))
+        asyncio.run(undo(cfg, args.run_id))
+        return 0
     if args.command == "doctor":
         return _cmd_doctor()
     if args.command == "config":
-        return _cmd_config(args.show)
+        return _cmd_config(args)
     return 2
 
 

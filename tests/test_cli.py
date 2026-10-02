@@ -611,7 +611,7 @@ def test_undo_reverts_write(tmp_path):
     assert done["status"] == "done"
     target = cfg.workspace_dir / "a.txt"
     assert target.exists()
-    assert asyncio.run(undo(cfg, rid)) == 0
+    assert asyncio.run(undo(cfg, rid)) == 1  # returns the reverted count
     assert not target.exists()  # old=None → reverter deletes
 
 

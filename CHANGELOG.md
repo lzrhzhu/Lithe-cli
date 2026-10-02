@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.0 (2026-10-02)
+
+The workbench release (paired with lithe 0.9.14): profiles, sessions,
+and a full-screen interface you can steer without leaving it.
+
+- **provider profiles** — `$LITHE_HOME/config.json` grows from one flat
+  endpoint into named profiles (`{"version": 2, "active": …,
+  "profiles": {…}}`). A legacy flat file keeps working untranslated
+  until the next save. `lithe config --list / --use NAME / --model
+  NAME` switch non-interactively; `--profile` / `LITHE_PROFILE` pick a
+  profile per run; per-key precedence stays flag > env > profile, so CI
+  pins keep winning. `lithe models` lists (and caches) the endpoint's
+  `GET /models`.
+- **persistent sessions** — every `lithe chat` conversation is stored
+  as a kernel conversation: `chat --continue` resumes the latest,
+  `chat --resume ID|标题前缀` a specific one, `lithe sessions` lists /
+  renames / deletes (soft delete — runs stay for `log`/`undo`).
+  Sessions remember their last profile/model and restore them on
+  resume unless flag/env pinned. Cancelled turns replay cleanly (the
+  kernel already reconciles orphan tool calls).
+- **the workbench** — a new orchestration layer (`Workbench`) behind
+  both frontends: one dispatcher for every slash command, per-session
+  turn tasks (switching away does not cancel a running turn), and an
+  event bus both the plain REPL and the TUI subscribe to.
+- **TUI pickers + sections** — F3 opens the session picker (Enter
+  switch, `n` new, `d` delete, `r` rename), F4 the model picker
+  (grouped by profile, `s` save as profile default, `r` fetch list).
+  The sidebar is now five fixed sections (会话 / 模型 / 运行 / 工具+待办
+  / 用量), busy sessions carry a `●` badge, the header shows
+  `profile · model · #会话 标题`, and `/` commands complete inline
+  (including `/model <name>` and `/profile <name>` arguments).
+- **new commands in chat** — `/model [名称|--save]`, `/models`,
+  `/profile [名称]`, `/sessions`, `/resume [ID]`, `/rename 标题`,
+  `/undo [run]` plus the existing `/new /tools /sidebar /help /exit`.
+- **one-shot `lithe run` unchanged** — no session, no picker; the TUI
+  for it is still one turn and `q` to leave.
+
 ## 0.6.5 (2026-10-01)
 
 The Windows release (paired with lithe 0.9.12): piped and redirected

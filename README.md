@@ -24,6 +24,28 @@ interactive terminal prompts for the three essentials and saves them to
 `$LITHE_HOME/config.json` (mode 0600 — it holds the key). An optional
 connectivity probe catches typos before your first turn.
 
+The config file holds **named profiles** — several endpoints, one active:
+
+```json
+{
+  "version": 2,
+  "active": "zhipu",
+  "profiles": {
+    "zhipu": {"base_url": "https://…", "api_key": "…", "model": "glm-4.6",
+               "context_window": 128000, "cached_models": ["glm-4.6"]},
+    "openrouter": {"base_url": "https://…", "api_key": "…", "model": "…"}
+  }
+}
+```
+
+```bash
+lithe config                 # wizard (edits the active profile)
+lithe config --list          # profiles, key masked
+lithe config --use openrouter   # switch active profile (script-friendly)
+lithe config --model glm-4.5    # set the active profile's default model
+lithe models                 # GET {base_url}/models, cached into the profile
+```
+
 To configure by hand instead, point the CLI at any OpenAI-compatible
 endpoint:
 
@@ -34,10 +56,11 @@ export LITHE_MODEL=your-model
 ```
 
 Resolution order is flag (`--api-key`, `--base-url`, `--model`) >
-environment > saved config file, per key. The wizard never runs without
-a TTY on both ends, so pipes and CI keep the hard refusal; `--no-setup`
-restores that fail-fast behavior on terminals too. `lithe config --show`
-peeks at the saved values with a masked key.
+environment > the selected profile's fields, per key; `--profile NAME`
+(or `LITHE_PROFILE`) selects a profile for one invocation. The wizard
+never runs without a TTY on both ends, so pipes and CI keep the hard
+refusal; `--no-setup` restores that fail-fast behavior on terminals
+too. `lithe config --show` peeks at the saved values with a masked key.
 
 `LITHE_HOME` (default `~/.lithe`) locates the run store; the agent's
 workspace defaults to the current directory (`--workspace` to change).
@@ -71,49 +94,63 @@ usage/context gauges; `--max-steps` caps the tool loop;
 
 On an interactive terminal, `lithe chat` and `lithe run TASK` open a
 persistent full-screen interface instead of scribbling one-line events
-into the console:
+into the console. The left pane is the conversation; the right sidebar
+is five fixed sections — 会话（current + recent ones, `●` marks sessions
+with a turn still running）、模型、运行、工具/待办、用量:
 
 ```text
- lithe 0.6.2 · your-model · /home/me/my-project      ● 完成 · 0.2s
+ lithe 0.7.0 · zhipu · glm-4.6 │ ▣ #12 重构计划 │ ~/myproj    ● 运行中
 ╭─ 对话 ──────────────────────────────╮╭─ 运行状态 ─────────╮
-│ 把 a.txt 改成三行待办清单            ││ ● 完成 · 0.2s      │
-│ ◆ update_todos                      ││ 步骤 2/35 · 0.2s   │
-│ ✓ 任务清单已更新（3 条） 0.0s        ││ ✓ update_todos 0.0s│
- │ ◆ edit_file · 局部修改 a.txt        ││ ✓ edit_file 0.0s   │
-│ ✓ 编辑 a.txt（+3 -1 行） 0.0s       ││ ◆ 待办 1/3         │
-│ 已完成。                             ││ [~] 修改 a.txt     │
-│                                     ││ ◆ 会话用量         │
-│                                     ││ 输入 1,024 · 输出 216│
-│                                     ││ 缓存输入 768       │
-│                                     ││ 合计 1,240 · $0.0021│
-│                                     ││ 上下文 1,024 / 128,000 (0.8%)│
-╰─────────────────────────────────────╯╰────────────────────╯
+│ 把 a.txt 改成三行待办清单            ││ ◆ 会话             │
+│ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●     │
+│ ✓ 编辑 a.txt（+3 -1 行） 0.0s       ││ #11 bugfix ✓ 7轮   │
+│ 已完成。                             ││ F3 切换 · /new 新建│
+│                                      ││ ◆ 模型             │
+│                                      ││ zhipu · glm-4.6    │
+│                                      ││ ◆ 会话用量         │
+│                                      ││ 输入 1,024 · 输出 216│
+╰──────────────────────────────────────╯╰─────────────────────╯
 lithe ❯ _
- ● 完成 · 0.2s          Enter 发送 · F2 侧栏 · /help 命令
+ ● 运行中 · 步骤 2/35   Enter 发送 · F3 会话 · F4 模型 · /help
 ```
 
-The left pane is the conversation (task, compact tool-call summaries
-and outcomes — file edits land with `+N -M 行` counts — and the
-streaming assistant reply). The right sidebar shows run status, recent
-tools, todos, session-wide cumulative input/output/cached tokens and
-cost, plus the latest model-call context length and window percentage;
-usage numbers live only there, the bottom bar keeps status and key
-hints. The conversation has an application-managed mouse selection: drag across
-its text and press `Ctrl+C` to copy only the selected conversation, without
-sidebar content. `Shift+drag` bypasses the application and uses the terminal's
-native selection, which can cross both panes; hide the sidebar with F2 or
-`/sidebar` before using native selection. The conversation scrolls with the
-mouse wheel, PageUp/PageDown and Home/End (a new turn jumps back to the output).
-`Ctrl+C` cancels the current turn when there is no conversation selection and
-exits when idle. In `lithe run` mode the result stays on screen until you press
-`q`. Layout, wrapping and alignment are East-Asian-width aware; narrower
-terminals stack the two panes vertically. Pipes and CI keep the plain per-line
-output unchanged.
+**Switch without leaving the screen**: `F3` opens the session picker
+(`Enter` switch, `n` new, `d` delete, `r` rename), `F4` the model picker
+(grouped by profile; `Enter` switch, `s` save as the profile's default,
+`r` fetch `/models`). Switching away from a running session does **not**
+cancel it — its badge stays lit and the pane rebuilds from the store when
+you come back. Typing `/` pops an inline completion menu (commands, then
+model/profile names as arguments). `Ctrl+C` cancels the current turn,
+copies when a conversation selection is active, and exits when idle.
 
-History carries across turns within a session (each turn is its own run
-in the store, replayed as context for the next). `/new` clears the
-conversation history and session usage totals; `/tools` lists the
-registered tools, `/help` lists the commands.
+The conversation has an application-managed mouse selection: drag across
+its text and press `Ctrl+C` to copy only the selected conversation,
+without sidebar content. `Shift+drag` bypasses the application and uses
+the terminal's native selection, which can cross both panes; hide the
+sidebar with F2 or `/sidebar` before using native selection. The
+conversation scrolls with the mouse wheel, PageUp/PageDown and Home/End
+(a new turn jumps back to the output). Layout, wrapping and alignment
+are East-Asian-width aware; narrower terminals stack the two panes
+vertically. Pipes and CI keep the plain per-line output unchanged.
+
+### Sessions
+
+Every chat conversation persists as a kernel conversation (one run per
+turn, messages written incrementally):
+
+```bash
+lithe chat -c                  # continue the most recent session
+lithe chat --resume 12         # by id (or unique title prefix)
+lithe sessions                 # list; newest activity first
+lithe sessions --rename 12 规划 # rename
+lithe sessions --delete 12     # soft delete (runs stay: log/undo work)
+```
+
+A session remembers its last profile and model and restores them on
+resume (unless `--model`/env pinned). Inside chat, the same operations
+are slash commands: `/sessions`, `/resume 12`, `/new [标题]`,
+`/rename 标题`, `/model glm-4.5 [--save]`, `/profile zhipu`,
+`/models`, `/undo`, `/tools`, `/sidebar`, `/help`, `/exit`.
 
 ### Extra capabilities
 
@@ -156,7 +193,9 @@ the model.)
 
 ```bash
 $ lithe runs                     # stored runs (newest last)
+$ lithe sessions                 # stored conversations (newest first)
 $ lithe log abc123def456         # messages + actions of one run
+$ lithe models                   # what the endpoint offers (cached)
 $ lithe doctor                   # config + capability status
 ```
 
@@ -192,18 +231,23 @@ keys, inline wizard validation, and persistent history.
 | Path | Contents |
 | --- | --- |
 | current dir (or `--workspace`) | the agent's sandboxed workspace — every tool path resolves strictly inside it |
-| `~/.lithe/runs` (or `--store`) | JSONL run store: messages, actions, undo records |
+| `~/.lithe/config.json` (or `LITHE_HOME`) | endpoint profiles: `{version, active, profiles}` (0600 — it holds keys) |
+| `~/.lithe/runs` (or `--store`) | JSONL run store: conversations, runs, messages, actions, undo records |
 | `~/.lithe/runs/todos-<scope-hash>.json` | the agent's task list, isolated by user and resolved workspace |
 | `~/.lithe/skills` (or `--skills`) | the markdown skill library, when enabled |
 | `~/.lithe/history` | chat input history (prompt_toolkit `FileHistory`; Up/Ctrl+R recall) |
 
 ## Design notes
 
-- The CLI is a thin host: it supplies tools, a system prompt, and the
-  kernel's `JsonlRunStore`; everything else (ReAct loop, streaming, budgets,
-  replay, undo engine) is reused from lithe.
+- The CLI is a thin host over a `Workbench`: the workbench owns the
+  endpoint view (profile + model), the session manager and the running
+  turns; the plain REPL and the full-screen TUI are both just
+  subscribers to its event bus and callers of one dispatcher. Everything
+  else (ReAct loop, streaming, budgets, replay, undo engine) is reused
+  from lithe.
 - End-to-end behavior is tested offline against a scripted transport — no
-  test spends tokens.
+  test spends tokens. The TUI's row builders are pure functions tested
+  headless; only key handling needs a real PTY (POSIX CI).
 - `python -m lithe_cli` works alongside the `lithe` console script.
 
 ## License

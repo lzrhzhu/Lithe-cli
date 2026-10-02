@@ -207,6 +207,7 @@ async def execute(
     run_id: str | None = None,
     on_event=None,
     stop=None,
+    conversation_id: int | None = None,
 ) -> tuple[str, dict, Any]:
     """Run one task end-to-end; returns (run_id, done_event, host).
 
@@ -214,12 +215,14 @@ async def execute(
     event and silences the line-oriented printing below, including the
     footer — the caller renders from the events instead. ``stop`` is the
     kernel's cancellation handle, surfaced so Ctrl+C can cancel a turn
-    without killing the process.
+    without killing the process. ``conversation_id`` attaches the run to a
+    stored session (kernel host already consumes ctx.extra).
     """
     reg = build_registry(cfg)
     host = build_host(cfg, reg)
     rid = run_id or uuid.uuid4().hex[:12]
-    ctx = AgentContext(run_id=rid, user_id=cfg.user_id)
+    extra = {"conversation_id": conversation_id} if conversation_id is not None else {}
+    ctx = AgentContext(run_id=rid, user_id=cfg.user_id, extra=extra)
     manager = None
     if cfg.mcp_servers:
         from lithe.bundles.mcp import MCPManager
@@ -253,11 +256,12 @@ async def execute(
     return rid, ev, host
 
 
-async def undo(cfg: Config, run_id: str) -> int:
-    """Revert a run's mutations with the bundled tools' reverters."""
+async def undo(cfg: Config, run_id: str, quiet: bool = False) -> int:
+    """Revert a run's mutations; returns how many actions were reverted."""
     reg = build_registry(cfg)
     host = build_host(cfg, reg)
     report = await undo_run(host, run_id, cfg.user_id)
-    mark = ui.s("✓", GREEN) if report.reverted else ui.s("·", YELLOW)
-    print(f"{mark} 已撤销 {report.reverted} 个操作（run {run_id}）")
-    return 0
+    if not quiet:
+        mark = ui.s("✓", GREEN) if report.reverted else ui.s("·", YELLOW)
+        print(f"{mark} 已撤销 {report.reverted} 个操作（run {run_id}）")
+    return report.reverted

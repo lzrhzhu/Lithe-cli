@@ -37,6 +37,7 @@ ENV_BASE_URL = "LITHE_BASE_URL"
 ENV_MODEL = "LITHE_MODEL"
 ENV_HOME = "LITHE_HOME"
 ENV_MCP = "LITHE_MCP"
+ENV_PROFILE = "LITHE_PROFILE"
 
 DEFAULT_USER = "cli"
 
@@ -48,6 +49,9 @@ class Config:
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+    # Which saved profile the endpoint came from (display / doctor / TUI);
+    # None when the endpoint is env/flag-only or nothing is saved.
+    profile: str | None = None
     store_dir: Path = field(default_factory=lambda: default_store_dir())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
     user_id: str = DEFAULT_USER
@@ -65,6 +69,9 @@ class Config:
     mcp_servers: list = field(default_factory=list)
     vision: bool = False
     color: bool | None = None
+    # Keys fixed by flag/env this invocation: in-session profile switching
+    # must not clobber them (CI pinning LITHE_MODEL stays pinned).
+    pinned_keys: frozenset = frozenset()
     # Wire protocol ("chat" | "responses") or a custom LLMTransport instance.
     # Not exposed as a flag: the injection point for offline tests.
     transport: Any = "chat"
@@ -118,27 +125,20 @@ _ENDPOINT_KEYS = ("api_key", "base_url", "model")
 
 
 def config_file() -> Path:
-    """Where the wizard-saved endpoint lives."""
+    """Where the wizard-saved profiles live (see :mod:`lithe_cli.profiles`)."""
     return lithe_home() / "config.json"
 
 
 def load_saved_endpoint() -> dict:
-    """Read {api_key, base_url, model} from the config file; {} if none.
+    """Read the active profile's {api_key, base_url, model}; {} if none.
 
     A corrupt file is treated as absent — a bad edit should cost the user
     one re-prompt, not a broken CLI.
     """
-    try:
-        data = json.loads(config_file().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {
-        k: data[k].strip()
-        for k in _ENDPOINT_KEYS
-        if isinstance(data.get(k), str) and data[k].strip()
-    }
+    from .profiles import ProfileStore
+
+    endpoint = ProfileStore().endpoint()
+    return {k: endpoint[k] for k in _ENDPOINT_KEYS if endpoint.get(k)}
 
 
 def _restrict_to_owner(path: Path, directory: bool = False) -> None:
@@ -181,22 +181,13 @@ def _restrict_to_owner(path: Path, directory: bool = False) -> None:
 
 
 def save_endpoint(api_key: str, base_url: str, model: str) -> Path:
-    """Write the config file with owner-only access where supported."""
-    path = config_file()
-    fresh_dir = not path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if fresh_dir:
-        _restrict_to_owner(path.parent, directory=True)
-    path.touch(exist_ok=True)
-    _restrict_to_owner(path)
-    payload = {
-        k: v
-        for k, v in (("api_key", api_key), ("base_url", base_url), ("model", model))
-    }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    return path
+    """Write the endpoint into the active profile (creating ``default`` when
+    no profile exists), preserving every other saved profile."""
+    from .profiles import DEFAULT_PROFILE, ProfileStore
+
+    store = ProfileStore()
+    name = store.active_name() or DEFAULT_PROFILE
+    return store.upsert(name, base_url, api_key, model)
 
 
 def load_config(args: Any) -> Config:
@@ -221,7 +212,23 @@ def load_config(args: Any) -> Config:
         skills_dir = cand if cand.is_dir() else None
 
     mcp_raw = g("mcp", None) or os.environ.get(ENV_MCP)
-    saved = load_saved_endpoint()  # flag > env > config file, per key
+    # Endpoint layer: flag > env > selected profile's fields, per key.
+    # --profile / LITHE_PROFILE pick the profile (unknown name → hard exit).
+    from .profiles import ProfileStore
+
+    selected = g("profile", None) or os.environ.get(ENV_PROFILE)
+    store = ProfileStore()
+    saved = store.endpoint(selected) if (selected or store.names()) else {}
+    active = store.active_name(selected) if selected else store.active_name()
+    pinned = frozenset(
+        k
+        for k, flag, env in (
+            ("api_key", g("api_key", None), ENV_API_KEY),
+            ("base_url", g("base_url", None), ENV_BASE_URL),
+            ("model", g("model", None), ENV_MODEL),
+        )
+        if flag or os.environ.get(env)
+    )
     return Config(
         api_key=(
             g("api_key", None) or os.environ.get(ENV_API_KEY) or saved.get("api_key")
@@ -230,12 +237,13 @@ def load_config(args: Any) -> Config:
             g("base_url", None) or os.environ.get(ENV_BASE_URL) or saved.get("base_url")
         ),
         model=(g("model", None) or os.environ.get(ENV_MODEL) or saved.get("model")),
+        profile=active,
         store_dir=store_dir,
         workspace_dir=workspace_dir,
         user_id=g("user", None) or DEFAULT_USER,
         stream=g("stream", False),
         max_steps=g("max_steps", 35),
-        context_window=g("context_window", None),
+        context_window=g("context_window", None) or saved.get("context_window"),
         timeout=g("timeout", 180.0),
         attempts=g("attempts", 2),
         download=g("download", False),
@@ -247,6 +255,7 @@ def load_config(args: Any) -> Config:
         mcp_servers=load_mcp_spec(mcp_raw) if mcp_raw else [],
         vision=g("vision", False),
         color=(True if g("color", False) else False if g("no_color", False) else None),
+        pinned_keys=pinned,
     )
 
 
@@ -272,6 +281,7 @@ def require_endpoint(cfg: Config, interactive: bool = False) -> None:
         "缺少模型端点配置。两种方式任选：\n"
         "  1) 交互式（推荐）：运行 lithe-cli config，按提示输入后保存到\n"
         f"     {config_file()}\n"
+        "     可保存多个档案（provider），用 lithe-cli config --use 切换。\n"
         "  2) 环境变量（或对应flag）：\n"
         f"     export {ENV_API_KEY}=sk-...\n"
         f"     export {ENV_BASE_URL}=https://your-endpoint/api/v1\n"

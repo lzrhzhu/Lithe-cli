@@ -29,6 +29,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.clipboard import ClipboardData
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
@@ -47,6 +48,7 @@ from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 
+from .commands import COMMANDS
 from .ui import display_width, pad, tool_call_label, truncate, wrap_text
 
 _TODO_MARKS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]", "cancelled": "[-]"}
@@ -109,11 +111,30 @@ class TuiState:
         workspace: str,
         max_steps: int,
         todos: list[dict] | None = None,
+        *,
+        profile: str = "",
+        session_id: int | None = None,
+        session_title: str = "",
     ):
         self.model = model
+        self.profile = profile
         self.workspace = workspace
         self.max_steps = max_steps
         self.todos = list(todos or [])
+        self.session_id = session_id
+        self.session_title = session_title
+        # Sessions shown in the sidebar; busy ones carry a live turn badge.
+        self.sessions: list[dict] = []
+        self.busy_sessions: set[int] = set()
+        # Completion sources, kept fresh by the driver (run_screen).
+        self.model_candidates: list[str] = []
+        self.profile_names: list[str] = []
+        # Modal picker ("sessions" | "model"): items are dicts with a kind
+        # ("item"/"head"/"hint"), label and payload; cursor points at items.
+        self.overlay: str | None = None
+        self.overlay_title: str = ""
+        self.overlay_items: list[dict] = []
+        self.overlay_cursor: int = 0
         self.running = False
         self.status = "就绪"
         self.step = 0
@@ -169,6 +190,46 @@ class TuiState:
     def invalidate(self) -> None:
         if self._app is not None and self._app.is_running:
             self._app.invalidate()
+
+    # -- sessions / overlay ---------------------------------------------------
+
+    def set_sessions(self, rows: list[dict], busy: set[int]) -> None:
+        self.sessions = list(rows)
+        self.busy_sessions = set(busy)
+        self.invalidate()
+
+    def open_overlay(self, name: str, title: str, items: list[dict]) -> None:
+        self.overlay = name
+        self.overlay_title = title
+        self.overlay_items = items
+        cursor = next((i for i, it in enumerate(items)
+                       if it.get("kind") == "item"), 0)
+        self.overlay_cursor = cursor
+        self.invalidate()
+
+    def close_overlay(self) -> None:
+        self.overlay = None
+        self.overlay_items = []
+        self.overlay_cursor = 0
+        self.invalidate()
+
+    def overlay_move(self, delta: int) -> None:
+        items = self.overlay_items
+        if not items:
+            return
+        idx = self.overlay_cursor
+        for _ in range(len(items)):
+            idx = (idx + delta) % len(items)
+            if items[idx].get("kind") == "item":
+                break
+        self.overlay_cursor = idx
+        self.invalidate()
+
+    def overlay_current(self) -> dict | None:
+        if 0 <= self.overlay_cursor < len(self.overlay_items):
+            item = self.overlay_items[self.overlay_cursor]
+            return item if item.get("kind") == "item" else None
+        return None
 
     # -- events -------------------------------------------------------------
 
@@ -478,13 +539,43 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
         if state.started is not None and state.running
         else 0.0
     )
-    lines = [
-        (cls, f"● {state.status}"),
-        ("dim", f"步骤 {state.step}/{state.max_steps} · {elapsed:.1f}s"),
-        ("dim", f"模型 {state.model}"),
-        ("dim", f"工作区 {state.workspace}"),
-        ("dim", "◆ 工具"),
-    ]
+    lines: list[tuple[str, str]] = []
+    # -- 会话 ----------------------------------------------------------------
+    lines.append(("dim", "◆ 会话"))
+    if state.session_id is None:
+        lines.append(("dim", "（单次运行，无会话）"))
+    else:
+        dot = "●" if state.session_id in state.busy_sessions else "·"
+        title = truncate(state.session_title or "无标题", 18)
+        lines.append(("", f"#{state.session_id} {title} {dot}"))
+        shown = 0
+        for row in state.sessions:
+            if shown >= 3:
+                break
+            if row.get("id") == state.session_id:
+                continue
+            shown += 1
+            mark = "●" if row["id"] in state.busy_sessions else (
+                "✓" if row.get("last_status") == "done" else "·")
+            other = truncate(str(row.get("title") or ""), 14)
+            lines.append(
+                ("dim", f" #{row['id']} {other} {mark} {row.get('n_runs', 0)}轮")
+            )
+        lines.append(("dim", "F3 切换 · /new 新建"))
+    # -- 模型 ----------------------------------------------------------------
+    lines.append(("dim", "◆ 模型"))
+    label = f"{state.profile} · {state.model}" if state.profile else state.model
+    lines.append(("", truncate(label, 30)))
+    if state.context_window:
+        lines.append(("dim", f"窗口 {state.context_window:,} · F4 切换"))
+    else:
+        lines.append(("dim", "F4 或 /model 切换"))
+    # -- 运行 ----------------------------------------------------------------
+    lines.append(("dim", "◆ 运行"))
+    lines.append((cls, f"● {state.status}"))
+    lines.append(("dim", f"步骤 {state.step}/{state.max_steps} · {elapsed:.1f}s"))
+    # -- 工具 ----------------------------------------------------------------
+    lines.append(("dim", "◆ 工具"))
     if not state.tools:
         lines.append(("dim", "暂无调用"))
     for tool in state.tools[-4:]:
@@ -492,6 +583,7 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
         suffix = f" {tool['elapsed']:.1f}s" if tool.get("elapsed") is not None else ""
         lines.append(("ok" if tool["status"] == "done" else "err" if tool["status"] == "failed" else "tool",
                       f"{mark} {tool['name']}{suffix}"))
+    # -- 待办 ----------------------------------------------------------------
     done = sum(todo.get("status") == "completed" for todo in state.todos)
     lines.append(("dim", f"◆ 待办 {done}/{len(state.todos)}"))
     if not state.todos:
@@ -500,6 +592,7 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
         mark = _TODO_MARKS.get(todo.get("status"), "[ ]")
         cls_todo = _TODO_CLASSES.get(todo.get("status"), "")
         lines.append((cls_todo, f"{mark} {todo.get('content', '')}"))
+    # -- 会话用量 --------------------------------------------------------------
     input_tokens = state.input_tokens + state._turn_input_tokens
     output_tokens = state.output_tokens + state._turn_output_tokens
     cached_tokens = state.cached_tokens + state._turn_cached_tokens
@@ -533,8 +626,12 @@ def _sidebar_lines(state: TuiState) -> list[tuple[str, str]]:
 
 def _header_row(state: TuiState, width: int, version: str) -> list:
     chip = f" {state.status} "
+    who = f"{state.profile} · {state.model}" if state.profile else state.model
+    if state.session_id is not None:
+        title = truncate(state.session_title or "无标题", 16)
+        who = f"▣ #{state.session_id} {title} │ {who}"
     left = truncate(
-        f" lithe {version} · {state.model} · {state.workspace}",
+        f" lithe {version} · {who} · {state.workspace}",
         width - display_width(chip) - 1,
     )
     return [
@@ -566,6 +663,136 @@ def compose_footer(state: TuiState, width: int, running_hint: str) -> list:
     return [(dot, " "), ("class:foot", pad(text, width - display_width(running_hint))), ("class:foot", running_hint)]
 
 
+# -- overlay pickers (pure item/row builders; shared with tests) -------------
+
+def sessions_overlay_items(session_rows: list[dict], busy: set[int]) -> list[dict]:
+    """Items for the session picker: one selectable row per conversation."""
+    items = []
+    for row in session_rows:
+        mark = "●" if row["id"] in busy else (
+            "✓" if row.get("last_status") == "done" else "·")
+        title = row.get("title") or "(无标题)"
+        items.append({
+            "kind": "item",
+            "label": f"#{row['id']} {mark} {row.get('n_runs', 0)}轮  {title}",
+            "conv_id": row["id"],
+        })
+    if not items:
+        items.append({"kind": "hint", "label": "（暂无会话，按 n 新建）"})
+    items.append({"kind": "hint",
+                  "label": "Enter 切换 · n 新建 · d 删除 · Esc 关闭"})
+    return items
+
+
+def models_overlay_items(
+    profile_names: list[str],
+    endpoints: dict[str, dict],
+    current_profile: str | None,
+    current_model: str | None,
+    current_candidates: list[str],
+) -> list[dict]:
+    """Items for the model picker: current profile first, then the rest."""
+    items: list[dict] = []
+    order = ([current_profile] if current_profile else []) + [
+        p for p in profile_names if p != current_profile
+    ]
+    if not order:
+        items.append({"kind": "hint",
+                      "label": "（无已保存档案；/model 名称 直接切换）"})
+    for profile in order:
+        ep = endpoints.get(profile) or {}
+        items.append({"kind": "head", "label": f"── {profile} ──"})
+        if profile == current_profile:
+            models = list(current_candidates)
+        else:
+            models = []
+            if ep.get("model"):
+                models.append(ep["model"])
+            for name in ep.get("cached_models") or []:
+                if name not in models:
+                    models.append(name)
+        for name in models:
+            active = profile == current_profile and name == current_model
+            items.append({
+                "kind": "item",
+                "label": f"{'●' if active else ' '} {name}",
+                "model": name,
+                "profile": profile,
+                "active": active,
+            })
+        if not models:
+            items.append({"kind": "hint", "label": "  （无缓存模型，r 拉取）"})
+    items.append({"kind": "hint",
+                  "label": "Enter 切换 · s 存为档案默认 · r 拉取列表 · Esc 关闭"})
+    return items
+
+
+def picker_rows(state: TuiState, width: int, height: int) -> list[list]:
+    """The modal picker panel that replaces the body while an overlay is open.
+
+    Long lists window around the cursor row (like the conversation pane
+    follows its tail): the cursor is always visible, whether at the top of
+    a long list or the bottom.
+    """
+    inner = max(1, max(20, width) - 4)
+    wrapped: list[tuple[str, str]] = []
+    spans: list[tuple[int, int, bool]] = []  # (start, end, is_cursor)
+    for i, item in enumerate(state.overlay_items):
+        is_item = item.get("kind") == "item"
+        cls = "" if is_item else "dim"
+        label = item.get("label", "")
+        if is_item and i == state.overlay_cursor:
+            cls = "tool"
+            label = f"▸ {label}"
+        start = len(wrapped)
+        wrapped.extend((cls, seg) for seg in wrap_text(label, inner))
+        spans.append((start, len(wrapped), cls == "tool"))
+    visible = max(1, height - 2)
+    window_start = max(0, len(wrapped) - visible)
+    for start, end, is_cursor in spans:
+        if is_cursor:
+            if end <= window_start:  # cursor above the window → pin to top
+                window_start = start
+            elif start >= window_start + visible:  # below → pin to bottom
+                window_start = max(0, end - visible)
+            break
+    window = wrapped[window_start:window_start + visible]
+    return _box(state.overlay_title or "选择", window, width, height)
+
+
+class SlashCompleter(Completer):
+    """Completes ``/``-commands and their known arguments (models, profiles)."""
+
+    def __init__(self, state: TuiState):
+        self.state = state
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        if " " not in text:
+            for name in sorted(COMMANDS):
+                if f"/{name}".startswith(text):
+                    args = COMMANDS[name][0]
+                    yield Completion(
+                        f"/{name} ", start_position=-len(text),
+                        display=f"/{name} {args}".rstrip(),
+                    )
+            return
+        head, _, arg = text.partition(" ")
+        command = head[1:].lower()
+        words: list[str] = []
+        if command == "model":
+            words = self.state.model_candidates
+        elif command == "profile":
+            words = self.state.profile_names
+        elif command == "resume":
+            words = [f"#{row['id']}" for row in self.state.sessions]
+        for word in words:
+            if word.startswith(arg) and word != arg:
+                yield Completion(word, start_position=-len(arg))
+
+
 # -- application ------------------------------------------------------------
 
 def _chat_history():
@@ -583,13 +810,24 @@ def _term_size(app: Application | None) -> tuple[int, int]:
     return cols, rows
 
 
-def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Application, Buffer]:
+def build_app(
+    state: TuiState,
+    mode: str,
+    version: str,
+    on_line,
+    on_overlay_select=None,
+    on_overlay_key=None,
+) -> tuple[Application, Buffer]:
     """Assemble the full-screen Application; the input line drives *on_line*.
 
     The conversation pane owns a selectable BufferControl, so in-app mouse
     selection and copying cannot include the sidebar. The conversation keeps
     a scroll offset (PgUp/PgDn/Home/End and the mouse wheel); F2 hides the
-    sidebar for terminals where native selection is preferred."""
+    sidebar for terminals where native selection is preferred. F3/F4 open
+    the session/model pickers — modal panels that swap the body area; their
+    Enter/letter keys are routed to *on_overlay_select* / *on_overlay_key*
+    (both optional; without them the pickers are read-only views).
+    """
     kb = KeyBindings()
     conversation_buffer = Buffer(read_only=True)
     conversation_lexer = _ConversationLexer()
@@ -599,8 +837,21 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
     state._conversation_buffer = conversation_buffer
     state._conversation_control = conversation_control
 
+    def _select(item: dict | None) -> None:
+        if item is not None and on_overlay_select is not None:
+            on_overlay_select(state.overlay, item)
+
+    def _key(action: str) -> None:
+        if on_overlay_key is not None:
+            on_overlay_key(state.overlay, action)
+
+    overlay_open = Condition(lambda: state.overlay is not None)
+
     @kb.add("c-c", eager=True)
     def _cancel_or_copy(event):
+        if state.overlay is not None:
+            state.close_overlay()
+            return
         if (
             event.app.layout.current_control is conversation_control
             and conversation_buffer.selection_state is not None
@@ -653,10 +904,44 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
 
     kb.add("f2")(_toggle_sidebar)
 
+    # -- pickers: modal navigation while an overlay is open -------------------
+    kb.add("f3")(lambda event: on_line("/sessions"))
+    kb.add("f4")(lambda event: on_line("/model"))
+
+    @kb.add("escape", filter=overlay_open, eager=True)
+    @kb.add("q", filter=overlay_open, eager=True)
+    def _overlay_close(event):
+        state.close_overlay()
+
+    @kb.add("up", filter=overlay_open, eager=True)
+    @kb.add("c-p", filter=overlay_open, eager=True)
+    def _overlay_up(event):
+        state.overlay_move(-1)
+
+    @kb.add("down", filter=overlay_open, eager=True)
+    @kb.add("c-n", filter=overlay_open, eager=True)
+    def _overlay_down(event):
+        state.overlay_move(1)
+
+    @kb.add("enter", filter=overlay_open, eager=True)
+    def _overlay_enter(event):
+        _select(state.overlay_current())
+
+    @kb.add("n", filter=overlay_open, eager=True)
+    @kb.add("d", filter=overlay_open, eager=True)
+    @kb.add("r", filter=overlay_open, eager=True)
+    @kb.add("s", filter=overlay_open, eager=True)
+    def _overlay_letter(event):
+        _key(event.key)
+
     buffer = Buffer(
         history=_chat_history() if mode == "chat" else None,
         multiline=False,
-        read_only=Condition(lambda: state.running or mode == "run"),
+        completer=SlashCompleter(state) if mode == "chat" else None,
+        complete_while_typing=Condition(lambda: state.overlay is None),
+        read_only=Condition(
+            lambda: state.running or mode == "run" or state.overlay is not None
+        ),
         accept_handler=lambda buff: (on_line(buff.text), False)[1],
     )
 
@@ -688,8 +973,23 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
                 fragments.append(("", "\n"))
         return FormattedText(fragments[:-1] if fragments else "")
 
+    def _overlay_text():
+        cols, rows = _term_size(state._app)
+        fragments = []
+        for row in picker_rows(state, cols, rows - 3):
+            fragments.extend(row)
+            fragments.append(("", "\n"))
+        return FormattedText(fragments[:-1] if fragments else "")
+
     def _body():
         cols, rows = _term_size(state._app)
+        if state.overlay is not None:
+            # the picker replaces the body: unambiguous modal focus, no
+            # mouse-selection interplay with the hidden panes
+            return Window(
+                FormattedTextControl(_overlay_text, show_cursor=False),
+                wrap_lines=False,
+            )
         (cw, ch), side = body_layout(state, cols, rows - 3)
         _refresh_conversation(cw, ch)
         conv = Window(
@@ -712,12 +1012,14 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
 
     def _footer():
         cols, _ = _term_size(state._app)
-        if mode == "run":
+        if state.overlay is not None:
+            hint = " ↑↓ 选择 · Enter 确认 · Esc 关闭 "
+        elif mode == "run":
             hint = " q 退出 · F2 侧栏 " if not state.running else " Ctrl+C 取消 · PgUp/PgDn 滚动 "
         elif state.running:
-            hint = " Ctrl+C 取消本轮 · PgUp/PgDn 滚动 "
+            hint = " Ctrl+C 取消本轮 · F3 会话 · F4 模型 "
         else:
-            hint = " Enter 发送 · F2 侧栏 · /help 命令 "
+            hint = " Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · /help 命令 "
         return FormattedText(compose_footer(state, cols, hint))
 
     def _prompt_text():
@@ -743,102 +1045,303 @@ def build_app(state: TuiState, mode: str, version: str, on_line) -> tuple[Applic
     return app, buffer
 
 
-_CHAT_HELP = """可用命令：
-  /help    显示这段帮助
-  /tools   列出当前注册的工具
-  /sidebar 显示/隐藏右侧状态栏（F2 同效）
-  /new     清空会话历史，重新开始
-  /exit    退出（等同 /quit）
-
-按键：PgUp/PgDn·滚轮 滚动对话，Home/End 跳到顶/底。
+_CHAT_KEYS = """按键：PgUp/PgDn·滚轮 滚动对话，Home/End 跳到顶/底。
+F2 侧栏 · F3 会话选择器 · F4 模型选择器（Esc 关闭）。
 鼠标拖选左侧对话后按 Ctrl+C 复制，仅会复制对话选区；
 Shift+拖拽交由终端原生选区处理，可能同时选中右侧内容。"""
 
+_SAY_CLASSES = {"user", "assistant", "err", "warn", "ok", "dim", "tool",
+                "reason"}
 
-async def run_screen(cfg, task: str | None, mode: str) -> int:
-    """Full-screen driver for `lithe chat` (mode='chat') and `lithe run`."""
-    from lithe.bundles import JsonlRunStore, JsonTodoStore
+
+def transcript_feed_lines(rows):
+    """Stored session messages -> conversation feed rows (TUI rebuild)."""
+    import json as _json
+
+    out = []
+    for m in rows:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role == "user" and content:
+            out.append(("user", content))
+        elif role == "assistant":
+            calls = m.get("tool_calls")
+            if isinstance(calls, str):
+                try:
+                    calls = _json.loads(calls)
+                except (ValueError, TypeError):
+                    calls = None
+            if isinstance(calls, list) and calls:
+                names = "、".join(
+                    (c.get("function") or {}).get("name", "?")
+                    for c in calls if isinstance(c, dict)
+                )
+                out.append(("tool", "◆ " + names))
+            if content:
+                out.append(("assistant", content))
+        elif role == "tool":
+            summary = (m.get("content") or "").replace("\n", " ")
+            out.append(("dim", "  · " + (m.get("tool_name") or "工具") + "："
+                        + truncate(summary, 60)))
+    return out
+
+
+async def run_screen(cfg, task, mode, args=None):
+    """Full-screen driver for `lithe chat` (mode='chat') and `lithe run`.
+
+    Chat is Workbench-driven: persistent sessions (F3 picker / /resume),
+    live model switching (F4 picker / /model), background turns keep their
+    badge when you switch away, and switching back rebuilds the pane from
+    the store. Run mode stays a one-shot: one turn, then q to leave.
+    """
+    import time as _time
+
+    from lithe.bundles import JsonTodoStore
 
     from . import __version__
-    from .agent import build_registry, execute, todo_store_path
+    from .agent import execute, todo_store_path
+    from .workbench import Workbench
 
     todo_store = JsonTodoStore(todo_store_path(cfg))
-    state = TuiState(
-        cfg.model or "(scripted)",
-        str(cfg.workspace_dir.resolve()),
-        cfg.max_steps,
-        todo_store.list(),
-    )
-    store = JsonlRunStore(cfg.store_dir)
-    run_ids: list[str] = []
-    current: dict = {"task": None}
+    wb = Workbench(cfg)
 
-    def _slash(line: str) -> bool:
-        if line in ("/exit", "/quit"):
-            state._app.exit()
-            return True
+    opening = []
+    if mode == "chat":
+        opening = wb.open(
+            resume=getattr(args, "resume", None),
+            continue_latest=bool(getattr(args, "cont", False)),
+            title=getattr(args, "title", None),
+        ).messages
+
+    states = {}
+
+    def _current_cid():
+        return wb.current["id"] if wb.current else None
+
+    def _base_state(cid):
+        title = ""
+        if cid is not None:
+            title = (wb.sessions.get(cid) or {}).get("title", "")
+        return TuiState(
+            cfg.model or "(scripted)",
+            str(cfg.workspace_dir.resolve()),
+            cfg.max_steps,
+            todo_store.list(),
+            profile=cfg.profile or "",
+            session_id=cid,
+            session_title=title,
+        )
+
+    def _refresh_meta(st):
+        st.model = cfg.model or "(scripted)"
+        st.profile = cfg.profile or ""
+        if wb.current is not None:
+            st.session_id = wb.current["id"]
+            st.session_title = wb.current.get("title") or ""
+        st.model_candidates = wb.model_candidates()
+        st.profile_names = wb.profiles.names()
+        st.set_sessions(wb.session_list(), wb.busy_ids())
+
+    def _state_for(cid):
+        if cid not in states:
+            st = _base_state(cid)
+            for cls, text in transcript_feed_lines(wb.sessions.transcript(cid)):
+                st.feed.append((cls, text))
+            usage = wb.sessions.usage_snapshot(cid)
+            if usage.get("known"):
+                st.input_tokens = usage["prompt_tokens"]
+                st.output_tokens = usage["completion_tokens"]
+                st.cached_tokens = usage["cached_tokens"]
+                st.tokens = usage["total_tokens"]
+            st.cost = usage["cost"]
+            states[cid] = st
+        _refresh_meta(states[cid])
+        return states[cid]
+
+    state = _state_for(_current_cid()) if _current_cid() is not None \
+        else _base_state(None)
+    for cls, text in opening:
+        state.say(cls if cls in _SAY_CLASSES else "dim", text)
+
+    def _activate(cid):
+        nonlocal state
+        state = _state_for(cid)
+        state._app = app
+        state.scroll = 0
+        state.invalidate()
+
+    def _say_result(r):
+        for cls, text in r.messages:
+            state.say(cls if cls in _SAY_CLASSES else "dim", text)
+
+    # -- workbench events -> active state ------------------------------------
+
+    def _on_workbench_event(cid, ev):
+        t = ev.get("type")
+        if t == "session_busy":
+            if cid == _current_cid():
+                state.running = True
+                state.started = _time.monotonic()
+                state.stop = (wb.turns.get(cid) or {}).get("stop")
+            state.set_sessions(wb.session_list(), wb.busy_ids())
+            return
+        if t == "session_idle":
+            if cid == _current_cid():
+                state.running = False
+                state.stop = None
+            state.set_sessions(wb.session_list(), wb.busy_ids())
+            return
+        if t == "command_output":
+            state.say(ev.get("style") if ev.get("style") in _SAY_CLASSES
+                      else "dim", ev.get("text", ""))
+            return
+        if t == "undo_done":
+            state.say("ok", "已撤销 " + str(ev.get("reverted", 0)) + " 个操作"
+                            "（run " + str(ev.get("run_id")) + "）")
+            return
+        if cid in (-1, _current_cid()):
+            state.on_event(ev)
+
+    wb.subscribe(_on_workbench_event)
+
+    # -- pickers -------------------------------------------------------------
+
+    def _open_picker(name):
+        if name == "sessions":
+            state.open_overlay(
+                "sessions", "会话",
+                sessions_overlay_items(wb.session_list(), wb.busy_ids()),
+            )
+        elif name == "model":
+            endpoints = {}
+            for p in wb.profiles.names():
+                try:
+                    endpoints[p] = wb.profiles.endpoint(p)
+                except SystemExit:
+                    pass
+            state.open_overlay(
+                "model", "模型",
+                models_overlay_items(
+                    wb.profiles.names(), endpoints,
+                    cfg.profile, cfg.model, wb.model_candidates(),
+                ),
+            )
+
+    def _after_switch():
+        cid = _current_cid()
+        if cid is not None:
+            _activate(cid)
+
+    def on_overlay_select(name, item):
+        state.close_overlay()
+        if not item:
+            return
+        if name == "sessions":
+            _say_result(wb.switch_session(str(item["conv_id"])))
+            _after_switch()
+        elif name == "model":
+            if item.get("profile") and item["profile"] != cfg.profile:
+                _say_result(wb.set_profile(item["profile"]))
+            _say_result(wb.set_model(item["model"]))
+            _refresh_meta(state)
+
+    def on_overlay_key(name, key):
+        if name == "sessions":
+            if key == "n":
+                state.close_overlay()
+                wb.new_session()
+                state.say("dim", "已开始新会话（/resume 可切回）")
+                _after_switch()
+            elif key == "d":
+                item = state.overlay_current()
+                state.close_overlay()
+                if item:
+                    _say_result(wb.delete_session(str(item["conv_id"])))
+                    if wb.current is None:
+                        wb.new_session()
+                    _after_switch()
+            elif key == "r":
+                state.close_overlay()
+                if buffer is not None:
+                    buffer.text = "/rename "
+        elif name == "model":
+            if key == "r":
+                state.close_overlay()
+                on_line("/models")
+            elif key == "s":
+                item = state.overlay_current()
+                state.close_overlay()
+                if item:
+                    if item.get("profile") and item["profile"] != cfg.profile:
+                        _say_result(wb.set_profile(item["profile"]))
+                    _say_result(wb.set_model(item["model"], save=True))
+                    _refresh_meta(state)
+
+    # -- input ----------------------------------------------------------------
+
+    def on_line(text):
+        line = text.strip()
+        if not line or state.running:
+            return
+        if not line.startswith("/"):
+            state.say("user", line)
+        try:
+            r = wb.dispatch(line)
+        except SystemExit as exc:
+            state.say("err", str(exc.code))
+            return
+        _say_result(r)
         if line == "/help":
-            state.say("dim", _CHAT_HELP)
-            return True
-        if line == "/sidebar":
+            state.say("dim", _CHAT_KEYS)
+        if r.toggle_sidebar:
             state.show_sidebar = not state.show_sidebar
-            state.say("dim", "（侧栏已隐藏，F2 或 /sidebar 恢复）" if not state.show_sidebar else "（侧栏已恢复）")
-            return True
-        if line == "/tools":
-            names = sorted(build_registry(cfg).names())
-            state.say("dim", "已注册工具：" + "、".join(names))
-            return True
-        if line == "/new":
-            run_ids.clear()
-            state.reset_usage()
-            state.say("dim", "（已清空会话历史与用量统计）")
-            return True
-        return False
+            state.say("dim", "（侧栏已隐藏，F2 或 /sidebar 恢复）"
+                      if not state.show_sidebar else "（侧栏已恢复）")
+        if r.action == "exit":
+            state._app.exit()
+            return
+        if r.awaitable is not None:
+            asyncio.create_task(r.awaitable())
+        if r.overlay in ("sessions", "model"):
+            _open_picker(r.overlay)
+        if r.overlay == "rebuild":
+            _after_switch()
+        elif r.changed:
+            _refresh_meta(state)
+        if r.action == "submit":
+            state.running = True  # immediate feedback; session_busy confirms
+            state.started = _time.monotonic()
+            state.scroll = 0
+            state.invalidate()
+            asyncio.create_task(wb.submit(r.text))
 
-    async def _turn(line: str) -> None:
+    # -- one-shot run mode ----------------------------------------------------
+
+    async def _one_shot(text):
         stop = asyncio.Event()
         state.stop = stop
         state.running = True
-        state.started = time.monotonic()
+        state.started = _time.monotonic()
         state.invalidate()
         try:
-            history = store.messages_for_runs(run_ids, cfg.user_id) if run_ids else None
-            rid, done, _ = await execute(
-                cfg, line, history=history, on_event=state.on_event, stop=stop
-            )
-            run_ids.append(rid)
-            if done.get("status") != "done":
-                state.say("warn", f"（本轮状态：{done.get('status')}）")
-        except asyncio.CancelledError:
-            raise
+            await execute(cfg, text, on_event=state.on_event, stop=stop)
         except Exception as exc:  # noqa: BLE001
-            state.say("err", f"运行出错：{exc}")
+            state.say("err", "运行出错：" + str(exc))
         finally:
             state.running = False
             state.stop = None
             state.invalidate()
 
-    def on_line(text: str) -> None:
-        line = text.strip()
-        if not line or state.running:
-            return
-        state.say("user", line)
-        if line.startswith("/") and _slash(line):
-            return
-        current["task"] = asyncio.create_task(_turn(line))
-
-    app, _ = build_app(state, mode, __version__, on_line)
+    app, buffer = build_app(state, mode, __version__, on_line,
+                            on_overlay_select=on_overlay_select,
+                            on_overlay_key=on_overlay_key)
     state._app = app
     if mode == "run" and task:
 
-        async def _start() -> None:
+        async def _start():
             state.say("user", task)
-            await _turn(task)
+            await _one_shot(task)
 
         asyncio.create_task(_start())
     await app.run_async()
-    if current["task"] is not None and not current["task"].done():
-        current["task"].cancel()
-    if mode == "run":
-        return 0 if state.last_status == "done" else 1
-    return 0
+    return 0 if mode != "run" else (0 if state.last_status == "done" else 1)
