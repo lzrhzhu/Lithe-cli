@@ -24,6 +24,7 @@ Known gap versus the prompt_toolkit screen: no in-app mouse-drag selection
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -271,15 +272,20 @@ class PickerModal(ModalScreen):
         Binding("d", "letter('d')", show=False),
         Binding("r", "letter('r')", show=False),
         Binding("s", "letter('s')", show=False),
+        # In-place toggle for the settings picker: flips the focused row
+        # without dismissing, so several knobs change in one visit.
+        Binding("space", "toggle", "切换（不关闭）", priority=True),
     ]
 
     def __init__(self, title: str, items: list[tuple[dict, str]],
-                 hint: str = "", letter_actions: dict[str, str] | None = None):
+                 hint: str = "", letter_actions: dict[str, str] | None = None,
+                 live_toggle: Callable[[dict], str | None] | None = None):
         super().__init__()
         self.title = title
         self.items = items
         self.hint = hint
         self.letter_actions = letter_actions or {}
+        self.live_toggle = live_toggle
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker"):
@@ -315,6 +321,25 @@ class PickerModal(ModalScreen):
         name = self.letter_actions.get(key)
         payload = self._current_payload()
         self.dismiss(("letter", name, payload) if name else None)
+
+    def action_toggle(self) -> None:
+        """Flip the focused row in place: the ``live_toggle`` callback
+        applies the change and returns a rebuilt label (``None`` when the
+        row is not toggleable); the modal stays open."""
+        if self.live_toggle is None:
+            return
+        view = self.query_one("#picker-list", ListView)
+        index = view.index if view.index is not None else 0
+        if not 0 <= index < len(self.items):
+            return
+        payload = self.items[index][0]
+        label = self.live_toggle(payload)
+        if label is None:
+            return
+        self.items[index] = (payload, label)
+        row = view.children[index]
+        if row.children:
+            row.children[0].update(label)
 
 
 # -- the app ----------------------------------------------------------------------
@@ -524,6 +549,8 @@ class LitheApp(App):
         if t == "command_output":
             self.state.say(ev.get("style") or "", ev.get("text", ""))
             self._sync_feed()
+            self._refresh_meta()  # e.g. /models just rewrote cached_models
+            self._refresh_chrome()
             return
         if t == "undo_done":
             self.state.say("ok", f"已撤销 {ev.get('reverted', 0)} 个操作"
@@ -669,7 +696,9 @@ class LitheApp(App):
                     ))
             self.push_screen(PickerModal(
                 "运行设置", items,
-                "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭",
+                "空格 切换（不关闭）· Enter 切换并关闭 · 数值项用 /set 名称 值"
+                " · Esc 关闭",
+                live_toggle=self._toggle_setting_live,
             ), self._set_picked)
         elif name == "reasoning":
             from .workbench import REASONING_LEVELS
@@ -724,6 +753,26 @@ class LitheApp(App):
         self._refresh_meta()
         self._refresh_chrome()
         self._sync_feed()
+
+    def _toggle_setting_live(self, payload) -> str | None:
+        """F5 picker's in-place toggle (space): flip the knob via the same
+        bare ``set_setting`` call /set makes, refresh the chrome, and hand
+        back the row's rebuilt label; hints are not toggleable."""
+        if not payload or payload.get("kind") == "hint":
+            return None
+        r = self.wb.set_setting(payload["key"])  # bare value toggles booleans
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        if r.changed:
+            self._refresh_meta()
+            self._refresh_chrome()
+        self._sync_feed()
+        row = next(row for row in self.wb.settings_rows()
+                   if row["key"] == payload["key"])
+        value = row["value"]
+        shown = "on" if value else "off"
+        return (f"{'[green]●[/] ' if value else '○ '}"
+                f"{row['key']:<10} {shown:<4}{row['label']}")
 
     def _set_picked(self, result) -> None:
         if not result or result[0] != "select" or not result[1]:

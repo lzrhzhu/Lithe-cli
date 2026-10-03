@@ -354,3 +354,50 @@ def test_f5_settings_picker_toggles_bool(tmp_path):
             assert "shell：off → on" in _conv_text(app)
 
     asyncio.run(scenario())
+
+
+def test_f5_space_toggles_in_place_without_closing(tmp_path):
+    """Regression: Enter was the only toggle and it dismissed the picker,
+    so flipping several knobs meant reopening F5 per knob. Space now
+    flips the focused row in place and the modal stays open."""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("f5")
+            await pilot.pause()
+            assert isinstance(app.screen, PickerModal)
+            await pilot.press("space")  # shell off -> on
+            await pilot.pause()
+            assert app.cfg.shell is True
+            assert isinstance(app.screen, PickerModal), "空格不得关闭设置面板"
+            await pilot.press("down")
+            await pilot.press("space")  # code off -> on
+            await pilot.pause()
+            assert app.cfg.code is True and app.cfg.shell is True
+            assert isinstance(app.screen, PickerModal)
+            # the flipped row's label reflects the new state in place
+            labels = [label for _payload, label in app.screen.items]
+            assert any("shell" in text and "●" in text for text in labels)
+
+    asyncio.run(scenario())
+
+
+def test_command_output_refreshes_model_candidates(tmp_path):
+    """Regression: /models rewrote cached_models in the profile, but the
+    session's F4 list and /model completion stayed stale until an
+    unrelated event happened to call _refresh_meta."""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.cfg.model = "fresh-model"
+            app.wb._emit(-1, {"type": "command_output", "style": "ok",
+                              "text": "端点返回 2 个模型"})
+            await pilot.pause()
+            assert app.state.model == "fresh-model"
+            assert app.state.model_candidates[0] == "fresh-model"
+            assert "端点返回" in _conv_text(app)
+
+    asyncio.run(scenario())

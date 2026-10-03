@@ -771,7 +771,8 @@ def settings_overlay_items(setting_rows: list[dict]) -> list[dict]:
                           "label": f"  {row['key']:<10} {shown!s:<6}{row['label']}"
                                    f"（/set {row['key']} 值）"})
     items.append({"kind": "hint",
-                  "label": "Enter 切换开关 · 数值项用 /set 名称 值 · Esc 关闭"})
+                  "label": "空格 切换（不关闭）· Enter 切换并关闭 · 数值项用 "
+                           "/set 名称 值 · Esc 关闭"})
     return items
 
 
@@ -987,6 +988,10 @@ def build_app(
     @kb.add("enter", filter=overlay_open, eager=True)
     def _overlay_enter(event):
         _select(state.overlay_current())
+
+    @kb.add("space", filter=overlay_open, eager=True)
+    def _overlay_space(event):
+        _key(" ")
 
     @kb.add("n", filter=overlay_open, eager=True)
     @kb.add("d", filter=overlay_open, eager=True)
@@ -1257,6 +1262,7 @@ async def run_screen(cfg, task, mode, args=None):
         if t == "command_output":
             state.say(ev.get("style") if ev.get("style") in _SAY_CLASSES
                       else "dim", ev.get("text", ""))
+            _refresh_meta(state)  # e.g. /models just rewrote cached_models
             return
         if t == "undo_done":
             state.say("ok", "已撤销 " + str(ev.get("reverted", 0)) + " 个操作"
@@ -1321,8 +1327,9 @@ async def run_screen(cfg, task, mode, args=None):
             _say_result(wb.set_model(item["model"]))
             _refresh_meta(state)
         elif name == "set":
-            # Enter on a boolean row toggles it (same call /set 名称 makes)
-            _say_result(wb.set_setting(item["key"], "toggle"))
+            # Enter on a boolean row toggles it (same bare call /set makes)
+            _say_result(wb.set_setting(item["key"]))
+            _refresh_meta(state)
         elif name == "reasoning":
             _say_result(wb.set_reasoning(item["level"]))
             _refresh_meta(state)
@@ -1365,6 +1372,21 @@ async def run_screen(cfg, task, mode, args=None):
                 if item:
                     _say_result(wb.set_reasoning(item["level"], save=True))
                     _refresh_meta(state)
+
+        elif name == "set":
+            if key == " ":
+                item = state.overlay_current()
+                if not item:  # hint rows are not toggleable
+                    return
+                _say_result(wb.set_setting(item["key"]))
+                _refresh_meta(state)
+                row = next(r for r in wb.settings_rows()
+                           if r["key"] == item["key"])
+                value = row["value"]
+                shown = "on" if value else "off"
+                item["label"] = (f"{'●' if value else '○'} "
+                                 f"{row['key']:<10} {shown:<4}{row['label']}")
+                state.invalidate()
 
     # -- input ----------------------------------------------------------------
 

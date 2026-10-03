@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.5 (2026-10-03)
+
+The picker-polish release: F5 gains an in-place toggle so several
+knobs flip in one visit, `/models` refreshes the session's model list
+immediately, and the prompt_toolkit frontend's Enter-toggle is
+repaired.
+
+- **F5: 空格 in-place toggle** — Enter on a boolean row toggles *and
+  dismisses* the settings picker, so flipping several knobs meant
+  reopening F5 per knob. Space now flips the focused row in place —
+  the modal stays open and the row's label re-renders (`○ off` →
+  `● on`) — letting one visit set shell/code/vision/download/…
+  together. Enter keeps its 切换并关闭 behavior; hint rows ignore
+  space. Both frontends (Textual picker via a new `live_toggle`
+  callback on `PickerModal`, prompt_toolkit overlay via a `space`
+  binding), with updated hint and `/set` help texts.
+- **`/models` refreshes immediately** — the fetch rewrites
+  `cached_models` in the profile, but the in-session F4 list and
+  `/model` completion stayed stale until an unrelated event happened
+  to refresh the chrome. `command_output` events (what `/models` and
+  F4-`r` report through) now trigger the metadata refresh in both
+  frontends.
+- **`--ui prompt` Enter-toggle repaired** — tui.py passed the literal
+  token `"toggle"` to `set_setting` (the same 0.8.4 Textual bug),
+  so every Enter on a settings row errored with 是开关：on / off;
+  now it makes the same bare (toggle) call `/set` makes.
+
 ## 0.8.4 (2026-10-02)
 
 The picker-repair release: the 0.8.2/0.8.3 pickers shipped with three
