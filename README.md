@@ -137,10 +137,9 @@ and `↑`/`↓` recall the persistent input history. `Ctrl+C` cancels the
 current turn and exits when idle.
 
 Text selection uses the terminal's native `Shift+drag` (hide the sidebar
-with F2 first if it grabs both panes). The earlier prompt_toolkit screen —
-which adds in-app mouse selection and OSC 52 copy — remains available with
-`--ui prompt` / `LITHE_UI=prompt`. Pipes and CI keep the plain per-line
-output unchanged.
+with F2 first if it grabs both panes). Pipes and CI keep the plain
+per-line output unchanged; the legacy prompt_toolkit full-screen was
+removed — the Textual UI is the only full-screen front-end.
 
 ### Sessions
 
@@ -276,8 +275,9 @@ keys, inline wizard validation, and persistent history.
   from lithe.
 - The Textual screen is tested headlessly with `App.run_test()` pilots
   (turns, F2/F3/F4, history, completion) — real interaction tests that
-  also run on Windows; the legacy prompt_toolkit screen keeps its pure
-  row-builder tests plus POSIX-only PTY tests.
+  also run on Windows; its pure builders (sidebar/header/footer markup,
+  completion suggestions) and the shared `TuiState` event folding have
+  direct unit tests.
 - `python -m lithe_cli` works alongside the `lithe` console script.
 
 ## License

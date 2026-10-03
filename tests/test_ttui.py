@@ -296,24 +296,6 @@ def test_history_persists_across_processes(tmp_path, monkeypatch):
     asyncio.run(second())
 
 
-def test_resolve_ui_defaults_to_textual(monkeypatch):
-    from lithe_cli.main import _resolve_ui
-
-    class Args:
-        ui = None
-
-    monkeypatch.delenv("LITHE_UI", raising=False)
-    assert _resolve_ui(Args()) == "textual"
-    monkeypatch.setenv("LITHE_UI", "prompt")
-    assert _resolve_ui(Args()) == "prompt"
-    args = Args()
-    args.ui = "prompt"
-    monkeypatch.setenv("LITHE_UI", "textual")
-    assert _resolve_ui(args) == "prompt"  # flag beats env
-    monkeypatch.setenv("LITHE_UI", "garbage")
-    assert _resolve_ui(Args()) == "textual"  # unknown values fall back
-
-
 def test_f6_opens_reasoning_picker_and_applies(tmp_path):
     """Regression: F6 crashed with AttributeError (wb.REASONING_LEVELS)."""
 

@@ -314,3 +314,84 @@ def test_reasoning_effort_profile_roundtrip(tmp_path, monkeypatch):
     cfg = load_config(_PresetArgs())
     assert cfg.reasoning_effort is None
     assert "reasoning_effort" not in store.endpoint("zai")
+
+
+# --- document_format 分层（provider 束缚格式，base_url 自填） ------------------
+
+class _DocumentArgs(_PresetArgs):
+    document_format = None
+
+
+def test_document_format_from_provider_preset(tmp_path, monkeypatch):
+    """自建 openrouter 格式路由：provider 定方言，base_url 用自己的。"""
+    from lithe_cli.agent import build_llm
+    from lithe_cli.config import load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", "LITHE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    ProfileStore().upsert("selfhost", "https://my-router.example/api/v1",
+                          "sk-r", "claude-sonnet", provider="openrouter")
+
+    cfg = load_config(_DocumentArgs())
+    assert cfg.base_url == "https://my-router.example/api/v1"
+    assert cfg.document_format is None, "未显式设置时 cfg 不携带，preset 在 build_llm 补"
+    llm = build_llm(cfg)
+    assert llm.base_url == "https://my-router.example/api/v1"
+    assert llm.document_format == "inline-file", "preset 家族默认方言"
+
+
+def test_document_format_explicit_beats_preset(tmp_path, monkeypatch):
+    from lithe_cli.agent import build_llm
+    from lithe_cli.config import load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", "LITHE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    # 中转站说 openrouter 家族但只认 strict-OpenAI 两步上传：档案显式改写方言
+    ProfileStore().upsert("relay", "https://relay.example/api/v1", "sk-r",
+                          "gpt-x", provider="openrouter",
+                          document_format="files-api")
+
+    cfg = load_config(_DocumentArgs())
+    assert cfg.document_format == "files-api"
+    llm = build_llm(cfg)
+    assert llm.document_format == "files-api"
+    assert llm.base_url == "https://relay.example/api/v1"
+
+
+def test_document_format_none_provider_registers_probe_only(tmp_path,
+                                                             monkeypatch):
+    from lithe_cli.agent import build_llm
+    from lithe_cli.config import load_config
+    from lithe.bundles.documents import register_document_tools
+    from lithe import ToolRegistry
+    from lithe.bundles.workspace import Workspace
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", "LITHE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    ProfileStore().upsert("ds", "", "sk", "deepseek-chat", provider="deepseek")
+
+    cfg = load_config(_DocumentArgs())
+    llm = build_llm(cfg)
+    assert llm.document_format == "none", "deepseek 家族不吃文档块"
+    reg = ToolRegistry()
+    ws = Workspace(tmp_path)
+    register_document_tools(reg, lambda ctx: ws, llm_config=llm)
+    assert "document_info" in reg.names()
+    assert "analyze_document" not in reg.names()
+
+
+def test_document_format_field_roundtrips(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    store.upsert("a", "https://a.example/v1", "sk", "m",
+                 document_format="inline-file")
+    fresh = ProfileStore()
+    assert fresh.endpoint("a")["document_format"] == "inline-file"
+    store.upsert("plain", "https://p.example", "sk", "m")
+    assert "document_format" not in fresh.endpoint("plain")

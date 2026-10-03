@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from typing import Any
 
@@ -99,6 +98,22 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="grant image_info/analyze_image (vision on the main endpoint)",
         )
+        sp.add_argument(
+            "--document",
+            action="store_true",
+            help="grant document_info/analyze_document "
+            "(PDF/OOXML reading on the main endpoint)",
+        )
+        sp.add_argument(
+            "--document-format",
+            metavar="DIALECT",
+            default=None,
+            choices=["inline-file", "files-api", "none"],
+            help="document block dialect for analyze_document: "
+            "inline-file = OpenRouter family (incl. self-built same-format "
+            "routers), files-api = strict OpenAI two-step upload "
+            "(default: profile field document_format, else provider preset)",
+        )
         color = sp.add_mutually_exclusive_group()
         color.add_argument("--color", action="store_true", help="force colored output")
         color.add_argument(
@@ -112,13 +127,6 @@ def build_parser() -> argparse.ArgumentParser:
         common(sp)
         sp.add_argument(
             "--stream", action="store_true", help="stream tokens as they generate"
-        )
-        sp.add_argument(
-            "--ui",
-            choices=["textual", "prompt"],
-            default=None,
-            help="full-screen frontend (env LITHE_UI; default: textual; "
-            "'prompt' is the legacy prompt_toolkit screen)",
         )
         sp.add_argument(
             "--no-setup",
@@ -493,6 +501,8 @@ def _cmd_config(args: Any) -> int:
             print(ui.kv("profile", str(store.active_name() or "—")))
             if saved.get("provider"):
                 print(ui.kv("provider", saved["provider"]))
+            if saved.get("document_format"):
+                print(ui.kv("document_format", saved["document_format"]))
             print(ui.kv("base_url", saved["base_url"]))
             print(ui.kv("api_key", masked))
             print(ui.kv("model", saved["model"]))
@@ -603,20 +613,12 @@ def _chat_loop(
     return 0
 
 
-def _resolve_ui(args: Any) -> str:
-    """Which full-screen frontend: 'textual' (default) or 'prompt'."""
-    ui = getattr(args, "ui", None) or os.environ.get("LITHE_UI") or ""
-    ui = ui.strip().lower()
-    return ui if ui in ("prompt", "textual") else "textual"
-
-
 def _run_textual(cfg: Any, task: str | None, mode: str, args: Any) -> int:
     try:
         from .ttui import run_textual_screen
     except ImportError as exc:  # pragma: no cover - depends on install
         raise SystemExit(
-            f"Textual 前端不可用（{exc}）。pip install textual，"
-            "或用 --ui prompt 走旧版界面。"
+            f"Textual 前端不可用（{exc}）。请 pip install textual 后重试。"
         ) from exc
     # run_textual_screen is sync: it drives its own asyncio.run inside.
     return run_textual_screen(cfg, task, mode, args)
@@ -632,20 +634,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         require_endpoint(cfg, interactive=not args.no_setup)
         if screen_supported():
-            if _resolve_ui(args) == "textual":
-                return _run_textual(cfg, args.task, "run", args)
-            from .tui import run_screen
-
-            return asyncio.run(run_screen(cfg, args.task, "run"))
+            return _run_textual(cfg, args.task, "run", args)
         return _cmd_run(cfg, args.task)
     if args.command == "chat":
         require_endpoint(cfg, interactive=not args.no_setup)
         if screen_supported():
-            if _resolve_ui(args) == "textual":
-                return _run_textual(cfg, None, "chat", args)
-            from .tui import run_screen
-
-            return asyncio.run(run_screen(cfg, None, "chat", args))
+            return _run_textual(cfg, None, "chat", args)
         return _chat_loop(
             cfg,
             resume=args.resume,

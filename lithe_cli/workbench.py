@@ -34,12 +34,13 @@ from .sessions import SessionManager, auto_title, format_session_rows
 # Session-adjustable settings for /set: (user key, cfg attr, label, kind).
 # Order is the /set display order. Only per-turn assembly inputs belong
 # here — workspace/store/user stay startup-level (session identity), and
-# --ui/--mcp are process-scoped. `kind` drives parsing: bool accepts
+# --mcp is process-scoped. `kind` drives parsing: bool accepts
 # on/off/开/关 (bare invocation toggles); int/float require a value.
 _SETTING_DEFS: list[tuple[str, str, str, str]] = [
     ("shell", "shell", "run_command（宿主 shell，不可撤销）", "bool"),
     ("code", "code", "run_code / run_file（沙箱 Python）", "bool"),
     ("vision", "vision", "image_info / analyze_image（图像理解）", "bool"),
+    ("document", "document", "document_info / analyze_document（文档理解）", "bool"),
     ("download", "download", "download_file（网络下载）", "bool"),
     ("stream", "stream", "流式输出 token", "bool"),
     ("verbose", "verbose", "显示 usage / reasoning 事件", "bool"),
@@ -51,7 +52,7 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
 ]
 # Settings whose change alters the next turn's tool registry (vs. sampling
 # or rendering knobs): flipping them invalidates the /tools cache.
-_TOOL_AFFECTING = {"shell", "code", "vision", "download"}
+_TOOL_AFFECTING = {"shell", "code", "vision", "document", "download"}
 _TRUTHY = {"on", "true", "1", "开"}
 _FALSY = {"off", "false", "0", "关"}
 # Reasoning levels offered by /reasoning; any other typed token passes

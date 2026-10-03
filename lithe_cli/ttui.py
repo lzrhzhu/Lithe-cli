@@ -1,24 +1,20 @@
-"""The default full-screen front-end (Textual).
+"""The full-screen front-end (Textual).
 
-Selected by default for `lithe chat` / `lithe run` on an interactive
-terminal; the earlier prompt_toolkit screen stays available as
-``--ui prompt`` (``LITHE_UI=prompt``). Same Workbench backend as that
-screen — this module only replaces the presentation layer. Layout, modals,
-scrolling and repaint are Textual's.
+The only interactive UI: `lithe chat` / `lithe run` on an interactive
+terminal always launch it; without a TTY `main` falls back to the plain
+per-line REPL. Layout, modals, scrolling and repaint are Textual's.
 
-What is intentionally reused from the prompt_toolkit screen
-(:mod:`lithe_cli.tui`): ``TuiState`` (kernel-event folding, usage
-accounting), ``transcript_feed_lines`` (store → feed rows). The
-conversation pane renders *from* the state's feed, so both front-ends show
-identical content.
+What it builds on from :mod:`lithe_cli.tui`: ``TuiState`` (kernel-event
+folding, usage accounting), ``transcript_feed_lines`` (store → feed
+rows). The conversation pane renders *from* the state's feed.
 
 Input niceties: ``/``-commands complete inline (suggestions above the
 prompt, Tab accepts the first), and ↑/↓ recall the persistent chat history
 (shared with the plain REPL through prompt_toolkit's FileHistory store).
 
-Known gap versus the prompt_toolkit screen: no in-app mouse-drag selection
-/ OSC 52 copy — use the terminal's native Shift+drag selection instead
-(hide the sidebar with F2 first if it gets in the way).
+No in-app mouse-drag selection / OSC 52 copy — use the terminal's native
+Shift+drag selection instead (hide the sidebar with F2 first if it gets
+in the way).
 """
 
 from __future__ import annotations
@@ -440,7 +436,7 @@ class LitheApp(App):
             self.query_one("#prompt", Input).disabled = True
             asyncio.create_task(self._run_one_shot(self.initial_task))
 
-    # -- state management (mirrors the prompt_toolkit driver) -----------------
+    # -- state management --------------------------------------------------------
 
     def _current_cid(self) -> int | None:
         return self.wb.current["id"] if getattr(self, "wb", None) \
@@ -907,6 +903,6 @@ async def _driver(app: LitheApp) -> int:
 
 def run_textual_screen(cfg, task: str | None, mode: str,
                        args: Any = None) -> int:
-    """Drop-in Textual replacement for :func:`lithe_cli.tui.run_screen`."""
+    """The full-screen driver for `lithe chat` (mode='chat') and `lithe run`."""
     app = LitheApp(cfg, task, mode, args)
     return asyncio.run(_driver(app))

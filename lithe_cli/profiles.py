@@ -9,9 +9,19 @@ holds keys) grows from the original flat triple to a profile map::
       "profiles": {
         "zhipu": {"base_url": "...", "api_key": "...", "model": "glm-4.6",
                    "context_window": 128000, "cached_models": ["glm-4.6"]},
-        "openrouter": {"base_url": "...", "api_key": "...", "model": "..."}
+        "openrouter": {"base_url": "...", "api_key": "...", "model": "...",
+                        "provider": "openrouter"},
+        "selfhost": {"base_url": "https://my-router/api/v1", "api_key": "...",
+                      "model": "...", "provider": "openrouter",
+                      "document_format": "inline-file"}
       }
     }
+
+``provider`` names a vendor preset (format family) and only fills values
+left unset — an explicit ``base_url`` always wins, so a self-built router
+speaking the OpenRouter format keeps its own URL. ``document_format``
+overrides the preset's document-block dialect for ``analyze_document``
+(see lithe.bundles.documents).
 
 A legacy flat ``{api_key, base_url, model}`` file is translated in memory to
 the single profile ``default`` and is never rewritten until an explicit save
@@ -65,6 +75,9 @@ def _clean_endpoint(data: dict) -> dict:
     effort = data.get("reasoning_effort")
     if isinstance(effort, str) and effort.strip():
         out["reasoning_effort"] = effort.strip()
+    dfmt = data.get("document_format")
+    if isinstance(dfmt, str) and dfmt.strip():
+        out["document_format"] = dfmt.strip()
     for k in ("context_window",):
         v = data.get(k)
         if isinstance(v, int) and v > 0:
@@ -176,6 +189,7 @@ class ProfileStore:
         model: str,
         context_window: int | None = None,
         provider: str | None = None,
+        document_format: str | None = None,
     ) -> Path:
         if not valid_name(name):
             raise SystemExit(
@@ -188,6 +202,8 @@ class ProfileStore:
             endpoint["context_window"] = int(context_window)
         if provider and provider.strip():
             endpoint["provider"] = provider.strip()
+        if document_format and document_format.strip():
+            endpoint["document_format"] = document_format.strip()
         # keep a previously cached model list when the base_url is unchanged
         old = data["profiles"].get(name) or {}
         if old.get("cached_models") and old.get("base_url") == endpoint["base_url"]:

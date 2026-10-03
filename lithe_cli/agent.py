@@ -9,7 +9,9 @@ Everything here maps lithe's host contract onto CLI defaults:
 - tools — the workspace bundle (read/write/edit/list/search/glob +
   apply_patch) and todos, plus opt-in capabilities: ``--code`` (sandboxed
   Python), ``--shell`` (native host commands), ``--skills`` (markdown skill
-  library), ``--vision`` (image probe/analysis), ``--download`` (SSRF-guarded
+  library), ``--vision`` (image probe/analysis), ``--document``
+  (PDF/OOXML probe/analysis — dialect from ``--document-format`` > profile
+  ``document_format`` > provider preset), ``--download`` (SSRF-guarded
   network fetch) and ``--mcp`` (external MCP servers);
 - undo — the bundled tools register reverters, so ``lithe undo`` works with
   zero configuration.
@@ -82,6 +84,9 @@ def build_system_prompt(cfg: Config) -> str:
         extras.append("可以用 download_file 下载网络文件到工作区。")
     if cfg.skills_dir is not None:
         extras.append("可以先 load_skill 查看可用技能并按需加载规范。")
+    if cfg.document:
+        extras.append("可以用 analyze_document 直接阅读 PDF/DOCX/XLSX/PPTX 文档并回答关于它的具体问题；"
+                      "确定元信息（格式/页数）先用 document_info。")
     if not extras:
         return SYSTEM_PROMPT_BASE
     return SYSTEM_PROMPT_BASE + "".join(extras)
@@ -101,6 +106,9 @@ def build_llm(cfg: Config) -> LLMConfig:
         "stream": cfg.stream,
         "context_window": cfg.context_window,
         "reasoning_effort": cfg.reasoning_effort,
+        # Explicit dialect (flag/profile) overrides the preset default;
+        # apply_preset skips the None override so the preset fills in.
+        "document_format": cfg.document_format,
     }
     # The CLI's transport field defaults to "chat" and is only overridden by
     # offline tests (custom transports); the default must not clobber a
@@ -152,6 +160,17 @@ def build_registry(cfg: Config) -> ToolRegistry:
         from lithe.bundles.images import register_image_tools
 
         register_image_tools(reg, workspace_for, llm_config=build_llm(cfg))
+    if cfg.document:
+        from lithe.bundles.documents import register_document_tools
+
+        try:
+            register_document_tools(
+                reg, workspace_for, llm_config=build_llm(cfg),
+                document_format=cfg.document_format)
+        except ValueError as exc:
+            raise SystemExit(
+                f"{exc}。请修正 --document-format 或档案里的 document_format "
+                f"字段。") from exc
     return reg
 
 

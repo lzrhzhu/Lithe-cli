@@ -19,7 +19,11 @@ Capability flags (all off unless asked for):
 - ``--mcp SPEC``   external MCP servers (JSON array/object, or ``@file``);
                    env ``LITHE_MCP`` holds the same spec;
 - ``--vision``     ``image_info`` + ``analyze_image`` (one vision call on
-                   the main endpoint, memoized per file hash).
+                    the main endpoint, memoized per file hash);
+- ``--document``   ``document_info`` + ``analyze_document`` (PDF/OOXML
+                    reading on the main endpoint; the content-block dialect
+                    comes from ``--document-format`` > the profile's
+                    ``document_format`` field > the provider preset).
 """
 
 from __future__ import annotations
@@ -57,6 +61,12 @@ class Config:
     # fills base_url when unset and contributes LLMConfig defaults (transport,
     # extra_body, ...) under the user's explicit values. See lithe.bundles.providers.
     provider: str | None = None
+    # Explicit document-block dialect for analyze_document:
+    # --document-format flag > this field; the provider preset's
+    # document_format fills in when neither is set (inside build_llm, so
+    # in-session profile switches re-resolve it). None = not explicit.
+    document_format: str | None = None
+    document: bool = False
     store_dir: Path = field(default_factory=lambda: default_store_dir())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
     user_id: str = DEFAULT_USER
@@ -139,7 +149,7 @@ def config_file() -> Path:
 
 
 def load_saved_endpoint() -> dict:
-    """Read the active profile's {api_key, base_url, model, provider}; {} if none.
+    """Read the active profile's endpoint fields; {} if none.
 
     A corrupt file is treated as absent — a bad edit should cost the user
     one re-prompt, not a broken CLI.
@@ -147,7 +157,7 @@ def load_saved_endpoint() -> dict:
     from .profiles import ProfileStore
 
     endpoint = ProfileStore().endpoint()
-    keys = (*_ENDPOINT_KEYS, "provider")
+    keys = (*_ENDPOINT_KEYS, "provider", "document_format")
     return {k: endpoint[k] for k in keys if endpoint.get(k)}
 
 
@@ -269,6 +279,10 @@ def load_config(args: Any) -> Config:
     effort = g("reasoning_effort", None) or saved.get("reasoning_effort")
     if effort is not None and effort.strip().lower() == "off":
         effort = None
+    # Document dialect for analyze_document: flag > profile field. The
+    # provider preset's default fills in inside build_llm (apply_preset
+    # skips the None override), so in-session profile switches re-resolve.
+    document_format = g("document_format", None) or saved.get("document_format")
     return Config(
         api_key=(
             g("api_key", None) or os.environ.get(ENV_API_KEY) or saved.get("api_key")
@@ -277,6 +291,10 @@ def load_config(args: Any) -> Config:
         model=(g("model", None) or os.environ.get(ENV_MODEL) or saved.get("model")),
         profile=active,
         provider=provider,
+        document_format=(document_format.strip()
+                         if isinstance(document_format, str)
+                         and document_format.strip() else None),
+        document=g("document", False),
         reasoning_effort=(effort.strip() if isinstance(effort, str) and effort.strip()
                           else None),
         store_dir=store_dir,

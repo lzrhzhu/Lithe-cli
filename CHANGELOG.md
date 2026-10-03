@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.6 (2026-10-03)
+
+Document understanding arrives as an opt-in capability with the wire
+dialect layered under the provider system, and the legacy prompt_toolkit
+full-screen front-end is removed for good.
+
+- **the legacy `--ui prompt` screen is gone** — the prompt_toolkit
+  full-screen application (`run_screen` / `build_app`, its layout,
+  lexers, pickers, mouse selection and OSC 52 copy) was deleted
+  wholesale: `lithe chat` / `lithe run` on an interactive terminal now
+  always launch the Textual front-end, non-TTY keeps the plain per-line
+  REPL, and there is no flag or env var that can reach the old screen
+  (`--ui` and `LITHE_UI` are no longer accepted). `tui.py` shrinks to
+  what the Textual UI builds on — `TuiState` (kernel-event folding),
+  `transcript_feed_lines`, `screen_supported`, the `/keys` help text.
+  prompt_toolkit remains a dependency for what it still does: the setup
+  wizard and the plain-REPL input line (CJK-safe editing, history).
+- **`--document`** — grants `document_info` + `analyze_document`
+  (PDF/DOCX/XLSX/PPTX reading on the main endpoint), alongside
+  `--vision`. `/set document` (and the F5 picker) toggles it in-session.
+- **`--document-format`** — the dialect selector
+  (`inline-file` / `files-api` / `none`), resolved
+  flag > profile `document_format` field > provider preset default
+  (openrouter → `inline-file`, openai → `files-api`,
+  deepseek/zai/qwen/moonshot → `none`). Without a resolved dialect the
+  deterministic `document_info` probe still registers; an unknown value
+  fails loudly at startup. `config --show` displays the saved field, and
+  profiles round-trip it (hand-written config.json entries survive
+  saves).
+
 ## 0.8.5 (2026-10-03)
 
 The picker-polish release: F5 gains an in-place toggle so several

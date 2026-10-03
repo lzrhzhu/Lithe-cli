@@ -140,6 +140,51 @@ def test_tools_command_with_vision(tmp_path, capsys):
     assert "image_info" in capsys.readouterr().out
 
 
+def test_tools_command_with_document(tmp_path, monkeypatch, capsys):
+    from lithe_cli.main import main
+
+    # Isolate the profile store: the real ~/.lithe/config.json may carry a
+    # document_format that would flip the probe-only expectation below.
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE", "LITHE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+
+    # 无方言：只注册确定性的 document_info
+    rc = main(
+        [
+            "tools",
+            "--workspace",
+            str(tmp_path),
+            "--store",
+            str(tmp_path / "s"),
+            "--document",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "document_info" in out
+    assert "analyze_document" not in out
+
+    # 给了方言：analyze_document 一并注册
+    rc = main(
+        [
+            "tools",
+            "--workspace",
+            str(tmp_path),
+            "--store",
+            str(tmp_path / "s2"),
+            "--document",
+            "--document-format",
+            "inline-file",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "document_info" in out
+    assert "analyze_document" in out
+
+
 def test_doctor_command(capsys):
     from lithe_cli.main import main
 
@@ -331,9 +376,9 @@ def test_run_dashboard_shows_tools_todos_and_usage():
     assert state.input_tokens == 150 and state.output_tokens == 30
     assert state.cached_tokens == 85 and state.context_tokens == 50
     assert state.last_turn_cost == pytest.approx(0.002)
-    from lithe_cli.tui import _sidebar_lines
+    from lithe_cli.ttui import sidebar_markup
 
-    usage_text = "\n".join(text for _, text in _sidebar_lines(state))
+    usage_text = sidebar_markup(state)
     assert "输入 150" in usage_text and "输出 30" in usage_text
     assert "缓存输入 85" in usage_text and "合计 180" in usage_text
     assert "本轮费用 $0.0020" in usage_text
@@ -342,7 +387,8 @@ def test_run_dashboard_shows_tools_todos_and_usage():
 
 
 def test_sidebar_usage_is_one_metric_per_line():
-    from lithe_cli.tui import TuiState, _sidebar_lines
+    from lithe_cli.ttui import sidebar_markup
+    from lithe_cli.tui import TuiState
 
     state = TuiState("模型", "/ws", 5)
     state.on_event({"type": "run_start"})
@@ -354,7 +400,7 @@ def test_sidebar_usage_is_one_metric_per_line():
         "total_tokens": 1540,
         "cost": 0.0123,
     })
-    lines = [text for _, text in _sidebar_lines(state)]
+    lines = sidebar_markup(state).splitlines()
     labels = ("输入 ", "输出 ", "缓存输入 ", "合计 ", "本轮费用 ", "累计费用 ")
     usage = [line for line in lines if line.startswith(labels)]
     for line in usage:
@@ -431,112 +477,6 @@ def test_persisted_todos_are_not_injected_into_unrelated_prompts(tmp_path):
     assert "更新前读取并保留相关的现有任务" in SYSTEM_PROMPT_BASE
 
 
-def test_panes_fit_terminal_and_stay_independent():
-    from lithe_cli.tui import (
-        TuiState,
-        _header_row,
-        body_layout,
-        compose_footer,
-        conversation_rows,
-        sidebar_rows,
-    )
-    from lithe_cli.ui import display_width
-
-    state = TuiState("模型", "/工作区", 5)
-    state.on_event({"type": "tool_call", "id": "c1", "name": "read_file", "args": {"path": "x"}})
-    state.on_event({"type": "todo_change", "new": [{"content": "处理中文任务", "status": "pending"}]})
-
-    for width, height in (
-        (100, 27), (76, 21), (56, 21), (40, 17), (56, 7), (40, 6)
-    ):
-        (cw, ch), side = body_layout(state, width, height)
-        if side is None:
-            assert (cw, ch) == (width, height)
-        elif side[1] == ch:  # side-by-side: independent windows on the same rows
-            assert cw + side[0] == width and ch == height
-        else:  # stacked: panes share columns, not rows
-            assert cw == side[0] == width and ch + side[1] <= height
-        for rows, w, h in (
-            (conversation_rows(state, cw, ch), cw, ch),
-            (sidebar_rows(state, *side) if side else [], *(side or (0, 0))),
-        ):
-            if not rows:
-                continue
-            assert len(rows) == h
-            for row in rows:
-                assert display_width("".join(f[1] for f in row)) == w
-        assert all(display_width(t) <= width for t, _ in _header_row(state, width, "0.7.0"))
-        assert all(display_width(text) <= width for _, text in compose_footer(state, width, " hint "))
-    assert "处理中文任务" in "\n".join(
-        "".join(f[1] for f in row) for row in sidebar_rows(state, 40, 17)
-    )
-
-    state.show_sidebar = False
-    (cw, ch), side = body_layout(state, 100, 27)
-    assert side is None and (cw, ch) == (100, 27)
-
-
-def test_conversation_copy_is_application_scoped_and_strips_frame():
-    from types import SimpleNamespace
-
-    from lithe_cli.tui import _selection_text, _send_clipboard
-
-    selected = "╭─ 对话 ─╮\n│ 左侧输出       │\n╰────────╯"
-    assert _selection_text(selected) == "左侧输出"
-
-    class Output:
-        def __init__(self):
-            self.data = ""
-            self.flushed = False
-
-        def write_raw(self, data):
-            self.data += data
-
-        def flush(self):
-            self.flushed = True
-
-    class Clipboard:
-        def set_data(self, data):
-            self.data = data.text
-
-    app = SimpleNamespace(output=Output(), clipboard=Clipboard())
-    _send_clipboard(app, "左侧输出")
-    assert app.clipboard.data == "左侧输出"
-    assert "52;c;" in app.output.data and app.output.flushed
-    assert "右侧" not in app.output.data
-
-
-def test_conversation_pane_scrolls_back_and_clamps():
-    from lithe_cli.tui import TuiState, conversation_rows
-
-    state = TuiState("模型", "/工作区", 5)
-    for i in range(30):
-        state.say("assistant", f"第 {i} 行")
-    rows = conversation_rows(state, 60, 12)
-    text = "\n".join("".join(f[1] for f in row) for row in rows)
-    assert "第 29 行" in text and "第 0 行" not in text
-
-    state.scroll = 10**9
-    rows = conversation_rows(state, 60, 12)
-    text = "\n".join("".join(f[1] for f in row) for row in rows)
-    assert "第 0 行" in text and "第 29 行" not in text
-    assert state.scroll == 30 - 10
-
-    state.scroll = 5
-    rows = conversation_rows(state, 60, 12)
-    text = "\n".join("".join(f[1] for f in row) for row in rows)
-    assert "第 15 行" in text and "第 24 行" in text and "第 29 行" not in text
-
-    state.say("assistant", "追加内容")
-    rows = conversation_rows(state, 60, 12)
-    text = "\n".join("".join(f[1] for f in row) for row in rows)
-    assert "第 15 行" in text and "追加内容" not in text
-    assert state.scroll == 6
-
-    state.on_event({"type": "run_start"})
-    assert state.scroll == 0
-
-
 def test_screen_supported_requires_interactive_input_and_output(monkeypatch):
     from lithe_cli import tui
 
@@ -555,16 +495,13 @@ def test_screen_supported_requires_interactive_input_and_output(monkeypatch):
 
 
 def test_conversation_retains_more_than_four_hundred_feed_lines():
-    from lithe_cli.tui import TuiState, conversation_rows
+    from lithe_cli.tui import TuiState
 
     state = TuiState("模型", "/工作区", 5)
     for i in range(450):
         state.say("assistant", f"历史行 {i}")
-    rows = conversation_rows(state, 60, 12)
-    text = "\n".join("".join(fragment[1] for fragment in row) for row in rows)
-    assert "历史行 0" not in text
-    assert "历史行 449" in text
     assert len(state.feed) == 450
+    assert state.feed[-1] == ("assistant", "历史行 449")
 
 
 def test_wrap_text_is_cjk_aware():
@@ -842,11 +779,12 @@ def _pty_drain(fd) -> bytes:
 
 
 def test_footer_does_not_duplicate_sidebar_usage():
-    from lithe_cli.tui import TuiState, compose_footer
+    from lithe_cli.ttui import footer_text
+    from lithe_cli.tui import TuiState
 
     state = TuiState("m", "/ws", 5)
     state.on_event({"type": "done", "status": "done", "steps": 3, "tokens": 120, "cost": 0.5})
-    line = "".join(f[1] for f in compose_footer(state, 100, " hint "))
+    line = footer_text(state)
     assert "完成" in line
     assert "tok" not in line and "$" not in line and "step" not in line
 
@@ -866,69 +804,6 @@ def test_file_tools_report_line_delta_in_feed(tmp_path):
     assert any("写入 a.txt（+1 行，新建）" in s for s in summaries)
     assert any("编辑 a.txt（+1 行）" in s for s in summaries)
     assert (cfg.workspace_dir / "a.txt").read_text(encoding="utf-8") == "hi\nyo"
-
-
-def test_fullscreen_app_scrolls_and_toggles_sidebar():
-    code = """
-import asyncio
-from lithe_cli.tui import TuiState, build_app
-
-async def main():
-    state = TuiState("m", "/ws", 5)
-    for i in range(40):
-        state.say("assistant", f"line {i}")
-    app, _ = build_app(state, "chat", "0.7.0", lambda text: None)
-    await app.run_async()
-    print(f"RESULT scroll={state.scroll} sidebar={state.show_sidebar}")
-
-asyncio.run(main())
-"""
-    feed = [
-        b"\x1b[5~",   # PageUp: scroll back
-        b"\x1b[6~",   # PageDown: back to the tail
-        b"\x1bOQ",    # F2: hide the sidebar
-        b"\x1b[5~",   # PageUp again: leave a nonzero offset
-        b"\x1b[5~",
-        b"\x03",      # Ctrl+C exits
-    ]
-    out, rc = _pty_run(code, feed, settle=0.4)
-    assert rc == 0
-    assert "RESULT scroll=" in out
-    assert "scroll=0 " not in out  # two PageUps must leave a nonzero offset
-    assert "sidebar=False" in out
-    assert "Traceback" not in out
-
-
-def test_fullscreen_copy_uses_only_conversation_selection():
-    code = """
-import asyncio
-from lithe_cli.tui import TuiState, build_app
-
-async def main():
-    state = TuiState("m", "/ws", 5)
-    state.say("assistant", "COPYTARGET")
-    app, _ = build_app(state, "chat", "0.7.0", lambda text: None)
-    async def select_text():
-        while not state._conversation_buffer.text:
-            await asyncio.sleep(0.01)
-        buffer = state._conversation_buffer
-        start = buffer.text.index("COPYTARGET")
-        buffer.cursor_position = start
-        buffer.start_selection()
-        buffer.cursor_position = start + len("COPYTARGET")
-        app.layout.focus(state._conversation_control)
-        app.invalidate()
-    asyncio.create_task(select_text())
-    await app.run_async()
-    print("RESULT")
-
-asyncio.run(main())
-"""
-    out, rc = _pty_run(code, [b"\x03", b"\x03"], settle=0.4)
-    assert rc == 0
-    assert "52;c;Q09QWVRBUkdFVA==" in out
-    assert "RESULT" in out
-    assert "Traceback" not in out
 
 
 def test_prompt_toolkit_cjk_paste_password_history(tmp_path):
