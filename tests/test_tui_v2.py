@@ -63,6 +63,25 @@ def test_footer_switches_hints_by_running_state():
     assert "Ctrl+C 取消" in busy and "F3" in busy and "F4" in busy
 
 
+def test_live_elapsed_shown_while_running():
+    import re
+    import time as _time
+
+    state = TuiState("m", "/ws", 5)
+    state.on_event({"type": "run_start"})
+    state.running = True
+    state.started = _time.monotonic() - 12.0
+    side = sidebar_markup(state)
+    foot = footer_text(state)
+    assert re.search(r"已进行 12\.\ds", side)
+    assert re.search(r"● 思考中 · 12\.\ds", foot)
+    # idle: the live line disappears and the settled duration takes over
+    state.running = False
+    state.last_turn_duration = 65.0
+    assert "已进行" not in sidebar_markup(state)
+    assert "本轮耗时 1m05s" in sidebar_markup(state)
+
+
 def test_completion_suggestions_cover_commands_and_args():
     state = TuiState("m", "/ws", 5)
     state.model_candidates = ["glm-4.6", "glm-4.5-air"]

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 (2026-10-03)
+
+- **live turn timer** — while a turn runs, the Textual footer and sidebar
+  now tick in real time (`● 思考中 · 12.3s`, `已进行 12.3s`): a 0.5 s
+  heartbeat repaints the chrome, so the clock advances even during long
+  model calls that emit no events. On turn end the running line is
+  replaced by the settled 本轮耗时. The plain (non-TTY) REPL keeps its
+  turn-end footer only — piped output must stay free of rewrite escapes.
+
 ## 0.9.1 (2026-10-03)
 
 The readability round: todos become visible where the work happens, turn

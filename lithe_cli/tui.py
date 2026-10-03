@@ -106,6 +106,15 @@ class TuiState:
         """Presentation refresh hook. The Textual front-end repaints on its
         own event loop, so this is deliberately a no-op here."""
 
+    def elapsed(self) -> float | None:
+        """Live seconds since the running turn started (None when idle or
+        before the first ``run_start``). Frontends pair this with a periodic
+        repaint so the timer advances even while the model call itself
+        emits no events."""
+        if self.running and self.started is not None:
+            return max(0.0, time.monotonic() - self.started)
+        return None
+
     # -- sessions -------------------------------------------------------------
 
     def set_sessions(self, rows: list[dict], busy: set[int]) -> None:

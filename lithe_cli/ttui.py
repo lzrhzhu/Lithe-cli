@@ -83,7 +83,11 @@ def sidebar_markup(state: TuiState) -> str:
         status_color = "red"
     out.append(f"[{status_color}]● {state.status}[/]")
     out.append(f"[dim]步骤 {state.step}/{state.max_steps}[/]")
-    if not state.running and state.last_turn_duration is not None:
+    live = state.elapsed()
+    if state.running:
+        if live is not None:
+            out.append(f"[yellow]已进行 {fmt_duration(live)}[/]")
+    elif state.last_turn_duration is not None:
         out.append(f"[dim]本轮耗时 {fmt_duration(state.last_turn_duration)}[/]")
     out.append("[dim]◆ 工具[/]")
     if not state.tools:
@@ -137,7 +141,10 @@ def sidebar_markup(state: TuiState) -> str:
 
 def footer_text(state: TuiState) -> str:
     if state.running:
-        return f" ● {state.status} · Ctrl+C 取消 · F3 会话 · F4 模型 · F6 推理 "
+        live = state.elapsed()
+        timer = f" · {fmt_duration(live)}" if live is not None else ""
+        return (f" ● {state.status}{timer} · Ctrl+C 取消 · F3 会话"
+                f" · F4 模型 · F6 推理 ")
     return (f" ● {state.status} · Enter 发送 · F2 侧栏 · F3 会话 · F4 模型"
             f" · F5 设置 · F6 推理 · /help ")
 
@@ -440,6 +447,10 @@ class LitheApp(App):
         self._sync_feed()
         self._refresh_chrome()
         self.query_one("#prompt", Input).focus()
+        # Live turn timer: kernel events alone leave the screen static
+        # during long model calls, so the chrome repaints on a heartbeat
+        # while a turn runs (elapsed comes from TuiState.elapsed()).
+        self.set_interval(0.5, self._tick_elapsed)
         if self.mode == "run" and self.initial_task:
             self.query_one("#prompt", Input).disabled = True
             asyncio.create_task(self._run_one_shot(self.initial_task))
@@ -545,6 +556,11 @@ class LitheApp(App):
         self.query_one("#foot", Static).update(footer_text(self.state))
         self.query_one("#side-wrap", VerticalScroll).display = \
             self.state.show_sidebar
+
+    def _tick_elapsed(self) -> None:
+        """Heartbeat for the running turn's live timer (see on_mount)."""
+        if self.state.running:
+            self._refresh_chrome()
 
     # -- workbench events -------------------------------------------------------
 
