@@ -291,6 +291,19 @@ def test_mid_turn_text_restored_and_commands_still_work(tmp_path):
     asyncio.run(scenario())
 
 
+async def _settle_bottom(pilot, conv):
+    """Give the follow anchor cycles to land: mounting grows the pane's
+    extent only after a layout refresh, so scroll position converges over
+    a few pauses (robust on slow CI)."""
+    import time
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        await pilot.pause(0.02)
+        if conv.scroll_y >= conv.max_scroll_y - 1:
+            return
+
+
 def test_sync_feed_follows_only_when_at_bottom(tmp_path):
     """Scrolling up to re-read earlier output sticks; new events must not
     yank the reader back to the bottom."""
@@ -304,6 +317,7 @@ def test_sync_feed_follows_only_when_at_bottom(tmp_path):
             await pilot.pause()
             conv = app.query_one("#conv", VerticalScroll)
             assert conv.max_scroll_y > 0
+            await _settle_bottom(pilot, conv)
             assert conv.scroll_y >= conv.max_scroll_y - 1  # followed down
             conv.scroll_to(y=0, animate=False)
             await pilot.pause()
@@ -314,9 +328,10 @@ def test_sync_feed_follows_only_when_at_bottom(tmp_path):
             await pilot.pause()
             assert conv.scroll_y == 0, "reading position must stick"
             conv.scroll_end(animate=False)
+            await _settle_bottom(pilot, conv)
             app.state.say("dim", "tail")
             app._sync_feed()
-            await pilot.pause()
+            await _settle_bottom(pilot, conv)
             assert conv.scroll_y >= conv.max_scroll_y - 1  # follows again
 
     asyncio.run(scenario())

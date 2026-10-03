@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.8 (2026-10-03)
+
+A one-fix follow-up to 0.8.7's scroll behavior, caught by CI timing on
+a slow runner.
+
+- **follow anchor lands after layout** — `_sync_feed`'s bottom-follow
+  called `scroll_end` immediately after mounting new lines, when the
+  pane's extent only grows on the next layout refresh: the scroll
+  anchored one refresh short of the bottom, and the following event's
+  at-bottom check then mis-read "the reader scrolled up" and stopped
+  following for good. The follow now also anchors via
+  `call_after_refresh`, so it lands on the true post-layout bottom. The
+  regression test settles over several pauses instead of asserting
+  after one (robust on slow CI).
+
 ## 0.8.7 (2026-10-03)
 
 The interaction-safety round: one-shot runs become cancellable, profile

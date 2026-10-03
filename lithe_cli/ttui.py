@@ -517,6 +517,12 @@ class LitheApp(App):
             streaming.update("")
         if at_bottom:
             conv.scroll_end(animate=False)
+            # The pane's extent only grows once the newly mounted lines lay
+            # out (next refresh). Anchoring again after that refresh keeps
+            # the follow exact: otherwise the scroll lands one refresh short
+            # of the bottom and the next event's at-bottom check mis-reads
+            # "still reading up there" and stops following for good.
+            conv.call_after_refresh(conv.scroll_end, animate=False)
 
     def _refresh_chrome(self) -> None:
         self.query_one("#top", Static).update(
