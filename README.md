@@ -97,7 +97,9 @@ $ lithe run "总结 README.md 的要点，存到 SUMMARY.md"
 
 `--stream` streams tokens as they generate; `-v` adds per-call
 usage/context gauges; `--max-steps` caps the tool loop;
-`--context-window` enables fullness gauges.
+`--context-window` enables fullness gauges; `--reasoning-effort LEVEL`
+sets the reasoning intensity for one invocation (flag > profile field;
+`/reasoning` adjusts it in-session).
 
 ### Full-screen interface
 
@@ -109,7 +111,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 工具/待办、用量:
 
 ```text
- lithe 0.8.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+ lithe 0.8.7 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
 ╭──────────────────────────────────────╮╭──────────────────────────╮
 │ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
 │ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
@@ -122,7 +124,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 ╰──────────────────────────────────────╯╰──────────────────────────╯
  Tab 采纳 → /model  /models  /new
  lithe ❯ _
- ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · /help
+ ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · F6 推理 · /help
 ```
 
 **Switch without leaving the screen**: `F3` opens the session picker
@@ -134,7 +136,11 @@ cancel it — its badge stays lit and the pane rebuilds from the store when
 you come back. Typing `/` shows matching commands above the prompt (`Tab`
 accepts; `/model`, `/profile`, `/set` complete their arguments too),
 and `↑`/`↓` recall the persistent input history. `Ctrl+C` cancels the
-current turn and exits when idle.
+current turn (a second press during the same turn force-exits) and exits
+when idle. Typing plain text mid-turn returns it to the input box with a
+note instead of dropping it; slash commands work while a turn runs. The
+transcript follows new output only while you're at the bottom — scroll
+up to re-read and your position sticks.
 
 Text selection uses the terminal's native `Shift+drag` (hide the sidebar
 with F2 first if it grabs both panes). Pipes and CI keep the plain
@@ -164,8 +170,9 @@ are slash commands: `/sessions`, `/resume 12`, `/new [标题]`,
 
 The per-turn knobs don't need a restart: `/set` (or `F5`) opens a picker
 where `Enter` toggles a capability, and typed forms set anything —
-`/set shell on`, `/set code off`, `/set vision`, `/set max-steps 50`,
-`/set timeout 240`, `/set attempts 3`, `/set stream on`, `/set verbose`.
+`/set shell on`, `/set code off`, `/set vision`, `/set document on`,
+`/set max-steps 50`, `/set timeout 240`, `/set attempts 3`,
+`/set stream on`, `/set verbose`.
 Settings apply to the **next turn** (the running turn keeps its own tool
 set), stay session-scoped (nothing is written to the profile), and
 turning `shell` on restates its trust warning. `/tools` re-derives the
@@ -191,10 +198,13 @@ The kernel ships these as bundles; the CLI grants them per flag:
 | `--skills DIR` | `load_skill` | markdown skill library; defaults to `$LITHE_HOME/skills` when it exists, `--skills ""` disables |
 | `--download` | `download_file` | SSRF-guarded, size-capped network fetch |
 | `--vision` | `image_info` / `analyze_image` | image probe is stdlib-only; analysis routes one vision call to the main endpoint |
+| `--document` | `document_info` / `analyze_document` | PDF/DOCX/XLSX/PPTX reading on the main endpoint; `/set document` toggles in-session |
+| `--document-format` | (dialect for `analyze_document`) | `inline-file` (OpenRouter family) / `files-api` (strict OpenAI upload) / `none` (probe only); default: profile field `document_format`, else provider preset |
 | `--mcp SPEC` | whatever the servers expose | JSON array/object or `@file` (env `LITHE_MCP`); stdio and streamable-http; failed servers degrade gracefully |
 
 ```bash
 $ lithe run --code "用 run_code 验证 results.csv 的行数"
+$ lithe run --document "总结 report.pdf 的结论，存到 NOTES.md"
 $ lithe run --shell "检查当前目录的项目状态"
 $ lithe chat --skills ~/my-skills --mcp @~/mcp.json
 ```
@@ -263,7 +273,7 @@ keys, inline wizard validation, and persistent history.
 | `~/.lithe/runs` (or `--store`) | JSONL run store: conversations, runs, messages, actions, undo records |
 | `~/.lithe/runs/todos-<scope-hash>.json` | the agent's task list, isolated by user and resolved workspace |
 | `~/.lithe/skills` (or `--skills`) | the markdown skill library, when enabled |
-| `~/.lithe/history` | chat input history (prompt_toolkit `FileHistory`; Up/Ctrl+R recall) |
+| `~/.lithe/history` | chat input history (prompt_toolkit `FileHistory`; `↑`/`↓` recall in the TUI, Ctrl+R search in the plain REPL) |
 
 ## Design notes
 

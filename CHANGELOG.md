@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.7 (2026-10-03)
+
+The interaction-safety round: one-shot runs become cancellable, profile
+re-config stops destroying fields it doesn't know, the config file
+survives a crash mid-write, mid-turn input is never silently dropped,
+`#N` suggestions actually route, and the transcript follows your scroll
+instead of fighting it.
+
+- **Ctrl+C cancels a one-shot `lithe run`** — run mode drives no
+  workbench turn, so `wb.cancel()` had nothing to stop and repeated
+  Ctrl+C just reprinted （正在取消本轮…）. The stop now falls back to the
+  run's own stop handle (the README promise), a second Ctrl+C during the
+  same turn force-exits, and the cancel-asked state resets when the turn
+  ends (both chat and run modes).
+- **profile fields survive a re-config** — `upsert` previously rebuilt
+  the endpoint from the wizard's triple only, silently erasing
+  `provider`, `reasoning_effort`, `document_format` and a hand-tuned
+  `context_window` when `lithe config` or the wizard re-saved an
+  existing profile. The stored endpoint now forms the base and the
+  caller's triple overwrites; `cached_models` still drops when the
+  base_url changes.
+- **atomic config saves** — `config.json` (which holds every saved API
+  key) is now written via temp-file + `os.replace` with the previous
+  version kept as `config.json.bak` (owner-only perms on both); a torn or
+  corrupt main file falls back to the `.bak` at load time, so a crash
+  mid-write costs the edit, not every profile.
+- **`/resume #N` routes** — the TUI's completion suggests session ids as
+  `#12`; `SessionManager.resolve` now accepts that shape instead of
+  failing with 找不到会话 #12.
+- **mid-turn input is not dropped** — plain text submitted while a turn
+  runs goes back into the input box with a warning (resubmit when the
+  turn ends) instead of vanishing; slash commands dispatch mid-turn as
+  they always did in the plain REPL (`/model`, `/resume`, …).
+- **the transcript follows only when you're at the bottom** — new feed
+  lines no longer yank the pane back down on every event while you
+  scrolled up to re-read earlier output; following resumes once you
+  return to the bottom. The dead prompt_toolkit-era scroll bookkeeping in
+  `TuiState` was removed with it.
+
 ## 0.8.6 (2026-10-03)
 
 Document understanding arrives as an opt-in capability with the wire

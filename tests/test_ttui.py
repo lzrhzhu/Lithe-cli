@@ -10,6 +10,8 @@ from conftest import _tc, make_config
 
 textual = pytest.importorskip("textual")
 
+from textual.containers import VerticalScroll  # noqa: E402
+
 from lithe_cli.ttui import (  # noqa: E402
     LitheApp,
     PickerModal,
@@ -207,6 +209,115 @@ def test_run_mode_one_shot(tmp_path):
             assert app.state.last_status == "done"
             text = _conv_text(app)
             assert "示例任务" in text and "已写入 a.txt" in text
+
+    asyncio.run(scenario())
+
+
+def test_run_mode_ctrl_c_cancels_one_shot_turn(tmp_path):
+    """One-shot mode has no workbench turn; Ctrl+C must still cancel via the
+    run's own stop handle (the README promise), not be a silent no-op."""
+    async def scenario():
+        release = asyncio.Event()
+
+        class _Hang:
+            async def complete(self, client, **kw):
+                await release.wait()
+                return {"content": "late", "tool_calls": [], "usage": {}}
+
+        cfg = make_config(tmp_path, [])
+        cfg.transport = _Hang()
+        app = LitheApp(cfg, "长任务", "run")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(0.2)
+            assert app.state.running, "one-shot turn should be in flight"
+            stop = app.state.stop
+            assert stop is not None
+            await pilot.press("ctrl+c")
+            assert stop.is_set(), "Ctrl+C must reach the run's stop handle"
+            assert "正在取消" in _conv_text(app)
+            assert app.is_running, "first Ctrl+C cancels, not exits"
+            # let the hung call return; the run then ends cancelled
+            release.set()
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if not app.state.running:
+                    break
+            assert not app.state.running
+            assert app.state.last_status in ("cancelled", "done")
+
+    asyncio.run(scenario())
+
+
+def test_mid_turn_text_restored_and_commands_still_work(tmp_path):
+    """Plain text typed mid-turn is not silently dropped (it returns to the
+    input box); slash commands dispatch while a turn runs, as in the REPL."""
+    async def scenario():
+        release = asyncio.Event()
+
+        class _Hang:
+            async def complete(self, client, **kw):
+                await release.wait()
+                return {"content": "ok", "tool_calls": [], "usage": {}}
+
+        cfg = make_config(tmp_path, [])
+        cfg.transport = _Hang()
+        app = LitheApp(cfg, None, "chat")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            inp = app.query_one("#prompt")
+            inp.value = "第一个任务"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app.state.running
+            # plain text mid-turn: warned and restored, not sent
+            inp.value = "补充说明"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert "未发送" in _conv_text(app)
+            assert app.query_one("#prompt").value == "补充说明"
+            # slash command mid-turn: dispatches normally
+            inp.value = "/help"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            text = _conv_text(app)
+            assert "命令" in text or "/model" in text
+            release.set()
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if not app.state.running:
+                    break
+            assert not app.state.running
+
+    asyncio.run(scenario())
+
+
+def test_sync_feed_follows_only_when_at_bottom(tmp_path):
+    """Scrolling up to re-read earlier output sticks; new events must not
+    yank the reader back to the bottom."""
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            for i in range(60):
+                app.state.say("dim", f"line {i}")
+            app._sync_feed()
+            await pilot.pause()
+            conv = app.query_one("#conv", VerticalScroll)
+            assert conv.max_scroll_y > 0
+            assert conv.scroll_y >= conv.max_scroll_y - 1  # followed down
+            conv.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            assert conv.scroll_y == 0
+            for i in range(10):
+                app.state.say("dim", f"more {i}")
+            app._sync_feed()
+            await pilot.pause()
+            assert conv.scroll_y == 0, "reading position must stick"
+            conv.scroll_end(animate=False)
+            app.state.say("dim", "tail")
+            app._sync_feed()
+            await pilot.pause()
+            assert conv.scroll_y >= conv.max_scroll_y - 1  # follows again
 
     asyncio.run(scenario())
 

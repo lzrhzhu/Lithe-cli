@@ -380,6 +380,7 @@ class LitheApp(App):
         self.mode = mode
         self.args = args
         self._shown = 0  # feed lines already mounted
+        self._cancel_asked = False  # first Ctrl+C cancels, second exits
 
     # -- composition ----------------------------------------------------------
 
@@ -497,6 +498,10 @@ class LitheApp(App):
     def _sync_feed(self) -> None:
         conv = self.query_one("#conv", VerticalScroll)
         streaming = self.query_one("#streaming", Static)
+        # Follow the feed only when the reader is already at (or near) the
+        # bottom: scrolling up to re-read earlier output mid-run must stick,
+        # not be yanked back to the bottom on every event.
+        at_bottom = conv.scroll_y >= conv.max_scroll_y - 1
         feed = self.state.feed
         while self._shown < len(feed):
             cls, text = feed[self._shown]
@@ -510,7 +515,8 @@ class LitheApp(App):
             streaming.update(self.state.streaming)
         else:
             streaming.update("")
-        conv.scroll_end(animate=False)
+        if at_bottom:
+            conv.scroll_end(animate=False)
 
     def _refresh_chrome(self) -> None:
         self.query_one("#top", Static).update(
@@ -529,7 +535,6 @@ class LitheApp(App):
         if t == "session_busy":
             if cid == self._current_cid():
                 self.state.running = True
-                self.state.scroll = 0
                 handle = self.wb.turns.get(cid) or {}
                 self.state.stop = handle.get("stop")
             self._refresh_meta()
@@ -539,6 +544,7 @@ class LitheApp(App):
             if cid == self._current_cid():
                 self.state.running = False
                 self.state.stop = None
+                self._cancel_asked = False
             self._refresh_meta()
             self._refresh_chrome()
             return
@@ -589,7 +595,17 @@ class LitheApp(App):
         event.input.value = ""
         self.query_one("#suggest", Static).display = False
         self.query_one("#prompt", HistoryInput).record(line)
-        if not line or self.state.running:
+        if not line:
+            return
+        if self.state.running and not line.startswith("/"):
+            # Plain text mid-turn is not silently discarded: it goes back
+            # into the input box for resubmitting when the turn ends.
+            # Slash commands still dispatch below — the workbench supports
+            # them while a turn runs (/model, /resume, ...), matching the
+            # plain REPL.
+            self.query_one("#prompt", HistoryInput).value = line
+            self.state.say("warn", "本轮还在进行中，未发送；文本已放回输入框，命令仍可用")
+            self._sync_feed()
             return
         if not line.startswith("/"):
             self.state.say("user", line)
@@ -864,8 +880,18 @@ class LitheApp(App):
 
     def action_cancel_or_exit(self) -> None:
         if self.state.running:
-            self.wb.cancel(self._current_cid())
-            self.state.say("warn", "（正在取消本轮…）")
+            if not self.wb.cancel(self._current_cid()):
+                # One-shot run mode drives no workbench turn, so wb.cancel
+                # has nothing to stop — fall back to the run's own stop
+                # handle (the README's "Ctrl+C cancels the current turn").
+                stop = getattr(self.state, "stop", None)
+                if stop is not None:
+                    stop.set()
+            if self._cancel_asked:
+                self.exit()  # second Ctrl+C during the same turn: force exit
+                return
+            self._cancel_asked = True
+            self.state.say("warn", "（正在取消本轮，再按一次 Ctrl+C 退出）")
             self._sync_feed()
         else:
             self.exit()
@@ -890,6 +916,7 @@ class LitheApp(App):
         finally:
             self.state.running = False
             self.state.stop = None
+            self._cancel_asked = False
             self._sync_feed()
             self._refresh_chrome()
             self.query_one("#prompt", Input).disabled = False

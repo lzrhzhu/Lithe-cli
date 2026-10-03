@@ -208,6 +208,59 @@ def test_corrupt_profile_file_reads_empty(tmp_path, monkeypatch):
     assert ProfileStore().endpoint() == {}
 
 
+def test_upsert_preserves_fields_the_caller_does_not_know(tmp_path, monkeypatch):
+    """A wizard-era save must not erase provider/reasoning/context fields."""
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    # hand-tuned profile with every preserved-field flavor
+    (tmp_path / "config.json").write_text(
+        '{"version": 2, "active": "zai", "profiles": {"zai": {'
+        '"api_key": "sk-old", "base_url": "https://z.example/api", '
+        '"model": "glm-4.6", "provider": "zai", '
+        '"reasoning_effort": "high", "document_format": "none", '
+        '"context_window": 128000, "cached_models": ["glm-4.6"]}}}',
+        encoding="utf-8")
+
+    # the wizard triple re-config: same base_url, new key/model
+    store.upsert("zai", "https://z.example/api", "sk-new", "glm-4.7")
+    ep = store.endpoint("zai")
+    assert ep["api_key"] == "sk-new" and ep["model"] == "glm-4.7"
+    assert ep["provider"] == "zai"
+    assert ep["reasoning_effort"] == "high"
+    assert ep["document_format"] == "none"
+    assert ep["context_window"] == 128000
+    assert ep["cached_models"] == ["glm-4.6"]  # same endpoint → list kept
+
+
+def test_save_is_atomic_and_leaves_recoverable_bak(tmp_path, monkeypatch):
+    """Crash-safety: the previous file survives as .bak and serves as the
+    load-time fallback when the main file is torn/corrupt."""
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    store.upsert("a", "https://a.example/api", "sk-a", "m-a")
+    store.upsert("b", "https://b.example/api", "sk-b", "m-b")
+    store.set_active("a")  # third save: .bak now holds both profiles
+
+    bak = tmp_path / "config.json.bak"
+    assert bak.exists(), "previous version must survive as .bak"
+    import json as _json
+    bak_profiles = _json.loads(bak.read_text(encoding="utf-8"))["profiles"]
+    assert "sk-a" in bak_profiles["a"]["api_key"]
+    assert "sk-b" in bak_profiles["b"]["api_key"]
+
+    # a torn main write (crash mid-save) falls back to the .bak content
+    (tmp_path / "config.json").write_text('{"version": 2, "act', encoding="utf-8")
+    recovered = ProfileStore()
+    assert sorted(recovered.names()) == ["a", "b"]
+    assert recovered.endpoint("b")["api_key"] == "sk-b"
+
+    # a corrupt main file with no usable .bak still reads empty, not raises
+    bak.unlink()
+    assert ProfileStore().names() == []
+    # no temp litter left behind
+    assert not (tmp_path / "config.json.tmp").exists()
+
+
 # --- provider presets -------------------------------------------------------
 
 class _PresetArgs:

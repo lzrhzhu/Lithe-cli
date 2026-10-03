@@ -27,6 +27,19 @@ def _make_sessions(tmp_path, n=2):
     return wb, ids
 
 
+def test_resume_accepts_hash_prefixed_id(tmp_path):
+    """The TUI completion suggests "#12"; dispatching that token must route."""
+    wb, ids = _make_sessions(tmp_path, n=3)
+    wb.open()  # a fresh current session to switch away from
+    r = wb.dispatch(f"/resume #{ids[0]}")
+    assert wb.current["id"] == ids[0]
+    assert not any(cls == "err" for cls, _ in r.messages)
+
+    # resolve() itself accepts both shapes
+    assert wb.sessions.resolve(f"#{ids[1]}")["id"] == ids[1]
+    assert wb.sessions.resolve(str(ids[2]))["id"] == ids[2]
+
+
 def test_sessions_subcommand_lists_renames_deletes(tmp_path, capsys):
     from lithe_cli.main import main
 

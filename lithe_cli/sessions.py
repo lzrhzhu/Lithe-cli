@@ -46,6 +46,9 @@ class SessionManager:
     def resolve(self, ident: str | int) -> dict | None:
         """Numeric id or unique title prefix → conversation row."""
         text = str(ident).strip()
+        # The TUI's completion suggests ids as "#12" — accept that shape.
+        if text.startswith("#") and text[1:].isdigit():
+            text = text[1:]
         if not text:
             return None
         if text.isdigit():

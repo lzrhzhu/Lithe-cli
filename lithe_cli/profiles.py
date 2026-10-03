@@ -39,6 +39,7 @@ user typed into the wizard or wrote by hand.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -89,26 +90,34 @@ def _clean_endpoint(data: dict) -> dict:
 
 
 class ProfileStore:
-    """Read/modify the profile file; every mutation rewrites it atomically
-    enough for a CLI (write-in-place with owner-only perms, like the wizard
-    always did)."""
+    """Read/modify the profile file; every mutation rewrites it via an
+    atomic temp-file replace (the previous version survives as ``.bak``)
+    with owner-only perms — the file holds every saved API key."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or config_file()
 
     # -- load / save ----------------------------------------------------------
 
+    def _read_json(self, path: Path):
+        """Parsed JSON at *path*, or None when unreadable/corrupt."""
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+
     def load(self) -> dict:
         """Normalized ``{"active": str | None, "profiles": {name: endpoint}}``.
 
-        Corrupt files and foreign shapes read as empty — a bad edit costs one
-        re-prompt, not a broken CLI (same policy as the old flat loader).
+        A corrupt main file falls back to the ``.bak`` left by the last
+        atomic save before degrading to empty — a bad edit or a torn write
+        costs the edit, not every saved profile.
         """
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"active": None, "profiles": {}}
-        if not isinstance(data, dict):
+        data = self._read_json(self.path)
+        if data is None:
+            data = self._read_json(
+                self.path.parent / (self.path.name + ".bak"))
+        if data is None or not isinstance(data, dict):
             return {"active": None, "profiles": {}}
         if "profiles" not in data:  # legacy flat triple → profile "default"
             endpoint = _clean_endpoint(data)
@@ -135,13 +144,23 @@ class ProfileStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if fresh_dir:
             _restrict_to_owner(self.path.parent, directory=True)
-        self.path.touch(exist_ok=True)
-        _restrict_to_owner(self.path)
         payload = {"version": 2, "active": active, "profiles": profiles}
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        # Atomic replace: a crash mid-write must never destroy every saved
+        # profile (API keys included). The old file survives as .bak for the
+        # load-time fallback; a failed rename chain leaves one of the two
+        # intact on disk.
+        tmp = self.path.parent / (self.path.name + ".tmp")
+        bak = self.path.parent / (self.path.name + ".bak")
+        tmp.write_text(text, encoding="utf-8")
+        _restrict_to_owner(tmp)
+        if self.path.exists():
+            try:
+                os.replace(self.path, bak)
+                _restrict_to_owner(bak)  # the backup holds keys too
+            except OSError:
+                pass  # best effort; the main replace below is what matters
+        os.replace(tmp, self.path)
         return self.path
 
     # -- queries --------------------------------------------------------------
@@ -196,18 +215,25 @@ class ProfileStore:
                 f"档案名 {name!r} 不合法（仅限字母、数字、点、下划线、连字符）"
             )
         data = self.load()
-        endpoint = {"api_key": api_key.strip(), "base_url": base_url.strip(),
-                    "model": model.strip()}
+        # Start from the existing endpoint so fields the caller doesn't
+        # know about — provider, reasoning_effort, document_format, a
+        # hand-tuned context_window — survive a re-config instead of being
+        # silently erased. The caller's triple always overwrites.
+        endpoint = dict(data["profiles"].get(name) or {})
+        endpoint.update({"api_key": api_key.strip(),
+                         "base_url": base_url.strip(),
+                         "model": model.strip()})
         if context_window:
             endpoint["context_window"] = int(context_window)
         if provider and provider.strip():
             endpoint["provider"] = provider.strip()
         if document_format and document_format.strip():
             endpoint["document_format"] = document_format.strip()
-        # keep a previously cached model list when the base_url is unchanged
-        old = data["profiles"].get(name) or {}
-        if old.get("cached_models") and old.get("base_url") == endpoint["base_url"]:
-            endpoint["cached_models"] = old["cached_models"]
+        # a cached model list is only meaningful for the same endpoint
+        if endpoint.get("cached_models") \
+                and data["profiles"].get(name, {}).get("base_url") \
+                != endpoint["base_url"]:
+            endpoint.pop("cached_models", None)
         data["profiles"][name] = {k: v for k, v in endpoint.items() if v}
         if data["active"] is None:
             data["active"] = name

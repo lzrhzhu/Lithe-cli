@@ -86,7 +86,6 @@ class TuiState:
         self.tools: list[dict] = []
         self.feed: list[tuple[str, str]] = []
         self.streaming = ""
-        self.scroll = 0
         self.show_sidebar = True
         self.started: float | None = None
         self.last_status: str | None = None
@@ -94,16 +93,9 @@ class TuiState:
 
     # -- feed ---------------------------------------------------------------
 
-    def _wrapped_rows(self, text: str) -> int:
-        # Row count without a terminal width: the Textual front-end wraps
-        # text itself, so this only feeds the scroll bookkeeping.
-        return len(text.splitlines() or [""])
-
     def say(self, cls: str, text: str) -> None:
         lines = str(text).splitlines() or [""]
         self.feed.extend((cls, line) for line in lines)
-        if self.scroll:
-            self.scroll += sum(self._wrapped_rows(line) for line in lines)
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -151,7 +143,6 @@ class TuiState:
         if kind == "run_start":
             self.status = "思考中"
             self.step = 0
-            self.scroll = 0
             # A previous round that died without a done event (host-level
             # failure) still burned tokens: keep its measured usage instead
             # of silently dropping it when the accumulators reset.
@@ -168,22 +159,13 @@ class TuiState:
             self.status = "思考中"
         elif kind == "assistant_delta":
             text = str(ev.get("text") or "")
-            if self.scroll and text:
-                self.scroll += (
-                    self._wrapped_rows(self.streaming + text)
-                    - self._wrapped_rows(self.streaming)
-                )
             self.streaming += text
         elif kind == "assistant":
             text = str(ev.get("text") or "")
             final_text = text or self.streaming
-            streamed_rows = self._wrapped_rows(self.streaming) if self.streaming else 0
             if final_text:
                 lines = final_text.splitlines() or [""]
                 self.feed.extend(("assistant", line) for line in lines)
-                if self.scroll:
-                    final_rows = sum(self._wrapped_rows(line) for line in lines)
-                    self.scroll += final_rows - streamed_rows
             self.streaming = ""
         elif kind == "tool_call":
             name = str(ev.get("name") or "tool")
