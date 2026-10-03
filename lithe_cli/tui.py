@@ -22,7 +22,7 @@ import os
 import sys
 import time
 
-from .ui import tool_call_label, truncate
+from .ui import fmt_duration, tool_call_label, truncate
 
 _STATUS_DONE = "done"
 
@@ -73,6 +73,7 @@ class TuiState:
         self.output_tokens = 0
         self.cached_tokens = 0
         self.last_turn_cost = 0.0
+        self.last_turn_duration: float | None = None
         self._turn_tokens = 0
         self._turn_cost = 0.0
         self._turn_input_tokens = 0
@@ -186,10 +187,24 @@ class TuiState:
             self.say("tool", f"◆ {tool_call_label(name, args)}")
             self.status = f"工具 {name}"
         elif kind == "tool_result":
-            self._settle_tool(ev.get("id"), bool(ev.get("ok")), ev.get("summary"))
+            self._settle_tool(ev.get("id"), bool(ev.get("ok")),
+                              ev.get("summary"), ev.get("error"))
         elif kind == "todo_change":
             self.todos = list(ev.get("new") or [])
-            self.say("dim", f"□ 任务清单已更新（{len(self.todos)} 项）")
+            done = sum(1 for t in self.todos if t.get("status") == "completed")
+            # The list belongs in the conversation feed, not only the
+            # sidebar: the sidebar can be hidden (F2) and caps at the last
+            # few items, which is exactly how "todos were created but I
+            # can't see them" happens.
+            self.say("dim", f"▤ 任务清单已更新（{done}/{len(self.todos)} 完成）")
+            marks = {"pending": "[ ]", "in_progress": "[~]",
+                     "completed": "[x]", "cancelled": "[-]"}
+            row_cls = {"in_progress": "warn", "completed": "ok"}
+            for n, item in enumerate(self.todos, 1):
+                status = str(item.get("status") or "pending")
+                self.say(row_cls.get(status, "dim"),
+                         f"  {n}. {marks.get(status, '[ ]')} "
+                         f"{item.get('content', '')}")
         elif kind == "usage":
             self._turn_input_tokens += int(ev.get("prompt_tokens") or 0)
             self._turn_output_tokens += int(ev.get("completion_tokens") or 0)
@@ -244,21 +259,38 @@ class TuiState:
                 self.context_window = int(ev["context_window"])
             if ev.get("context_percent") is not None:
                 self.context_percent = ev["context_percent"]
-            if self.started is not None:
-                self.status += f" · {time.monotonic() - self.started:.1f}s"
+            # Turn length: prefer the kernel's duration_s (covers the whole
+            # run incl. prompt assembly); fall back to the local run_start
+            # timer for envelopes that predate the field.
+            if ev.get("duration_s") is not None:
+                self.last_turn_duration = float(ev["duration_s"])
+            elif self.started is not None:
+                self.last_turn_duration = time.monotonic() - self.started
+            if self.last_turn_duration is not None:
+                self.status += f" · {fmt_duration(self.last_turn_duration)}"
         self.invalidate()
 
-    def _settle_tool(self, tool_id, ok: bool, summary) -> None:
+    def _settle_tool(self, tool_id, ok: bool, summary, error=None) -> None:
         tool = next(
             (t for t in reversed(self.tools) if t["id"] == tool_id and t["status"] == "running"),
             None,
         )
-        if tool is not None:
-            tool["elapsed"] = time.monotonic() - tool["t0"]
-            tool["status"] = "done" if ok else "failed"
-            mark = "✓" if ok else "✗"
-            label = str(summary or tool["name"]).replace("\n", " ")
-            self.say("ok" if ok else "err", f"{mark} {label} {tool['elapsed']:.1f}s")
+        if tool is None:
+            return
+        tool["elapsed"] = time.monotonic() - tool["t0"]
+        tool["status"] = "done" if ok else "failed"
+        label = str(summary or tool["name"]).replace("\n", " ")
+        if not ok and error:
+            # Same rule as the plain CLI: a failed call's summary ("参数错误")
+            # without the diagnostic is not readable output; when one text
+            # contains the other, keep only the longer one.
+            detail = str(error).replace("\n", " ")
+            if detail and label and (detail in label or label in detail):
+                label = detail if len(detail) > len(label) else label
+            elif detail:
+                label = f"{label} · {detail}" if label else detail
+        mark = "✓" if ok else "✗"
+        self.say("ok" if ok else "err", f"{mark} {label} {tool['elapsed']:.1f}s")
 
 
 _CHAT_KEYS = """按键：PgUp/PgDn 或鼠标滚轮 滚动对话，Home/End 跳到顶/底。

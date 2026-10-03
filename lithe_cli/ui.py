@@ -126,6 +126,23 @@ def tool_call_label(name: str, args: dict) -> str:
     return name
 
 
+def fmt_duration(seconds: float | None) -> str:
+    """Human wall-clock length: ``12.3s`` / ``2m05s`` / ``1h04m``.
+
+    Empty string for ``None`` so callers can drop the field silently.
+    """
+    if seconds is None:
+        return ""
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = int(seconds // 60)
+    sec = int(round(seconds % 60))
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    return f"{minutes // 60}h{minutes % 60:02d}m"
+
+
 class UI:
     """All terminal output goes through here; ``color`` gates every code."""
 
@@ -227,6 +244,28 @@ class UI:
         label = truncate(summary, max(8, self.width - 8 - display_width(tail)))
         print(f"  {mark} {self.s(label, GREEN if ok else RED)}{tail}")
 
+    _TODO_MARKS = {"pending": "[ ]", "in_progress": "[~]",
+                   "completed": "[x]", "cancelled": "[-]"}
+    _TODO_COLORS = {"in_progress": YELLOW, "completed": GREEN}
+
+    def todo_change(self, items: list) -> None:
+        """Print the full task list after an ``update_todos`` replace.
+
+        The tool's one-line summary only carries the count; without this
+        block the user never sees what the agent actually planned.
+        """
+        done = sum(1 for it in items if it.get("status") == "completed")
+        head = f"任务清单（{done}/{len(items)} 完成）"
+        print(f"  {self.s('▤', MAGENTA)} {self.s(head, MAGENTA, BOLD)}")
+        for n, it in enumerate(items, 1):
+            status = str(it.get("status") or "pending")
+            mark = self._TODO_MARKS.get(status, "[ ]")
+            color = self._TODO_COLORS.get(status)
+            mark = self.s(mark, color) if color else mark
+            content = truncate(str(it.get("content") or ""),
+                               max(8, self.width - 12))
+            print(f"     {n}. {mark} {content}")
+
     def error(self, msg: str) -> None:
         print(f"  {self.s('!', RED)} {self.s(msg, RED)}")
 
@@ -244,7 +283,7 @@ class UI:
         return self.s(f"  ~ {digest}", DIM)
 
     def footer(self, ev: dict) -> None:
-        """The one-line wrap-up after a run: status · steps · tokens · cost."""
+        """The one-line wrap-up after a run: status · steps · tokens · cost · time."""
         parts = [self.status(str(ev.get("status", "?")))]
         if ev.get("steps") is not None:
             parts.append(f"steps {ev['steps']}")
@@ -256,6 +295,9 @@ class UI:
         cost = ev.get("cost")
         if cost:
             parts.append(f"cost {cost:.4f}")
+        duration = fmt_duration(ev.get("duration_s"))
+        if duration:
+            parts.append(duration)
         print(f"{self.s('──', DIM)} {' · '.join(parts)}")
 
     # -- chat ---------------------------------------------------------------

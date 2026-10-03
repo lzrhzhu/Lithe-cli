@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.1 (2026-10-03)
+
+The readability round: todos become visible where the work happens, turn
+duration surfaces everywhere a turn ends, and failed tool calls explain
+themselves. Requires lithe ≥ 0.9.22 (host `duration_s`).
+
+- **todos are shown, not just counted** — `update_todos` emits a
+  `todo_change` event, but the plain REPL dropped it silently and the
+  Textual feed only printed "任务清单已更新（N 项）": the list itself lived
+  solely in the sidebar (hideable, capped at the last 5 items). Both
+  frontends now render the full checklist into the conversation —
+  `▤ 任务清单（2/5 完成）` with one `[ ]/[~]/[x]/[-]` line per item — so
+  the plan is visible exactly where the agent is working on it.
+- **turn duration** — each run's wall-clock length (`duration_s` from the
+  kernel's DONE event) now appears: in the plain REPL footer
+  (`── done · steps 3 · tokens 360 · cost 0.0021 · 12.3s`), in the TUI
+  status line and as a 本轮耗时 sidebar line, as a `time` column in
+  `lithe runs` (created_at → finished_at, `—` for legacy rows) and as
+  `耗时=` in `lithe log`.
+- **failed tool results explain themselves** — a failed call's terminal
+  line used to show only the terse summary ("参数错误"); the diagnostic
+  from the event's `error` field is now appended (deduplicated when the
+  summary is a prefix of the error), in both the plain REPL and the TUI.
+
 ## 0.9.0 (2026-10-03)
 
 The budgets-and-steering release: run budgets arrive as first-class CLI

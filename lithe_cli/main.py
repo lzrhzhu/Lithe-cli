@@ -285,15 +285,20 @@ def _cmd_runs(cfg: Any, limit: int) -> int:
     if not runs:
         print(ui.s(f"（{cfg.store_dir} 下没有 run 记录）", YELLOW))
         return 0
+    from .ui import fmt_duration
+
     rows = []
     for r in reversed(runs):  # newest last, like a log
         task = (r.task or "").replace("\n", " ")
-        rows.append([r.run_id, r.status, str(r.steps), f"{r.cost:.4f}", truncate(task, 60)])
+        duration = (fmt_duration(r.finished_at - r.created_at)
+                    if r.created_at and r.finished_at else "—")
+        rows.append([r.run_id, r.status, str(r.steps), f"{r.cost:.4f}",
+                     duration, truncate(task, 60)])
     print(
         ui.table(
-            ["run", "status", "steps", "cost", "task"],
+            ["run", "status", "steps", "cost", "time", "task"],
             rows,
-            cell_styles=[ui.s, ui.status, ui.s, ui.s, ui.s],
+            cell_styles=[ui.s, ui.status, ui.s, ui.s, ui.s, ui.s],
         )
     )
     return 0
@@ -305,9 +310,14 @@ def _cmd_log(cfg: Any, run_id: str) -> int:
     if run is None:
         print(ui.s(f"找不到 run {run_id}（user={cfg.user_id}）", RED))
         return 1
+    from .ui import fmt_duration
+
+    duration = (fmt_duration(run.finished_at - run.created_at)
+                if run.created_at and run.finished_at else None)
     print(
         f"run {ui.s(run.run_id, CYAN)}  status={ui.status(run.status)}  "
         f"steps={run.steps}  model={run.model}"
+        + (f"  耗时={duration}" if duration else "")
     )
     print(f"task: {run.task}")
     if run.final:

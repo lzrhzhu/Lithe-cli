@@ -314,9 +314,23 @@ def render_event(
             pending[ev["id"]] = time.monotonic()
     elif t == "tool_result":
         summary = (ev.get("summary") or "").replace("\n", " ")
+        if not ev.get("ok") and ev.get("error"):
+            # Failed calls carry the diagnostic in ``error``; the summary
+            # alone ("参数错误") tells the user nothing actionable. When one
+            # text already contains the other (common: summary is a prefix
+            # of the error), show only the longer one instead of echoing.
+            detail = str(ev["error"]).replace("\n", " ")
+            if detail and summary and (detail in summary or summary in detail):
+                summary = detail if len(detail) > len(summary) else summary
+            elif detail:
+                summary = f"{summary} · {detail}" if summary else detail
         started = pending.pop(ev.get("id"), None) if ev.get("id") else None
         elapsed = (time.monotonic() - started) if started is not None else None
         ui.tool_result(bool(ev.get("ok")), summary, elapsed)
+    elif t == "todo_change":
+        # update_todos replaced the list; print what it now contains —
+        # the tool's own result line only reports the item count.
+        ui.todo_change(ev.get("new") or [])
     elif t == "error":
         ui.error(str(ev.get("message", "")))
     elif t == "cancelled":

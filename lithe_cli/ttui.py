@@ -31,6 +31,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from .tui import TuiState, transcript_feed_lines
+from .ui import fmt_duration
 
 _MAX_FEED = 400  # mounted conversation lines before trimming the oldest
 
@@ -82,6 +83,8 @@ def sidebar_markup(state: TuiState) -> str:
         status_color = "red"
     out.append(f"[{status_color}]● {state.status}[/]")
     out.append(f"[dim]步骤 {state.step}/{state.max_steps}[/]")
+    if not state.running and state.last_turn_duration is not None:
+        out.append(f"[dim]本轮耗时 {fmt_duration(state.last_turn_duration)}[/]")
     out.append("[dim]◆ 工具[/]")
     if not state.tools:
         out.append("[dim]暂无调用[/]")

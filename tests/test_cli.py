@@ -240,6 +240,96 @@ def test_execute_prints_footer(tmp_path, capsys):
     assert (cfg.workspace_dir / "a.txt").exists()
 
 
+def test_execute_reports_turn_duration(tmp_path, capsys):
+    import re
+
+    cfg = make_config(tmp_path, WRITE_THEN_ANSWER)
+    _, done, _ = asyncio.run(execute(cfg, "把 a.txt 写为 hi"))
+    # the host's done envelope carries the wall-clock length, and the
+    # plain-CLI footer prints it
+    assert isinstance(done.get("duration_s"), float)
+    assert done["duration_s"] >= 0
+    out = capsys.readouterr().out
+    assert re.search(r"\d+(\.\d+)?s\s*$", out.strip().splitlines()[-1])
+
+
+def test_render_event_shows_todo_contents(capsys):
+    from lithe_cli.agent import render_event
+
+    render_event({"type": "todo_change", "old": [], "new": [
+        {"content": "检查测试", "status": "in_progress"},
+        {"content": "修复问题", "status": "pending"},
+    ]})
+    out = capsys.readouterr().out
+    assert "任务清单" in out
+    assert "检查测试" in out and "修复问题" in out
+    assert "[~]" in out and "[ ]" in out
+
+
+def test_render_event_tool_failure_shows_error_detail(capsys):
+    from lithe_cli.agent import render_event
+
+    render_event({"type": "tool_result", "id": "c1", "ok": False,
+                  "summary": "参数错误",
+                  "error": "old_text 不是唯一匹配（3 处）"})
+    out = capsys.readouterr().out
+    assert "参数错误" in out and "不是唯一匹配" in out
+
+
+def test_footer_shows_formatted_duration(capsys):
+    from lithe_cli.ui import UI, fmt_duration
+
+    assert fmt_duration(None) == ""
+    assert fmt_duration(12.34) == "12.3s"
+    assert fmt_duration(65.0) == "1m05s"
+    assert fmt_duration(3725.0) == "1h02m"
+    UI(color=False).footer({"status": "done", "steps": 2, "tokens": 240,
+                            "duration_s": 65.0})
+    out = capsys.readouterr().out
+    assert "done" in out and "1m05s" in out
+
+
+def test_runs_command_shows_time_column(tmp_path, capsys):
+    import re
+
+    cfg = make_config(tmp_path, WRITE_THEN_ANSWER)
+    asyncio.run(execute(cfg, "把 a.txt 写为 hi"))
+    capsys.readouterr()
+    from lithe_cli.main import _cmd_runs
+
+    assert _cmd_runs(cfg, 10) == 0
+    out = capsys.readouterr().out
+    assert "time" in out
+    assert re.search(r"\d+\.\d+s", out)  # created_at→finished_at rendered
+
+
+def test_tui_feed_shows_todo_contents():
+    from lithe_cli.tui import TuiState
+
+    state = TuiState("m", "/ws", 5)
+    state.on_event({"type": "run_start"})
+    state.on_event({"type": "todo_change", "new": [
+        {"content": "检查测试", "status": "in_progress"},
+        {"content": "修复问题", "status": "pending"},
+    ]})
+    feed_text = "\n".join(text for _, text in state.feed)
+    assert "▤" in feed_text and "0/2" in feed_text
+    assert "1. [~] 检查测试" in feed_text
+    assert "2. [ ] 修复问题" in feed_text
+
+
+def test_tui_done_records_turn_duration():
+    from lithe_cli.tui import TuiState
+    from lithe_cli.ttui import sidebar_markup
+
+    state = TuiState("m", "/ws", 5)
+    state.on_event({"type": "done", "status": "done", "steps": 1,
+                    "duration_s": 65.0})
+    assert state.last_turn_duration == 65.0
+    assert "1m05s" in state.status
+    assert "本轮耗时 1m05s" in sidebar_markup(state)
+
+
 def test_system_prompt_mentions_capabilities(tmp_path):
     from lithe_cli.agent import build_system_prompt
     from lithe_cli.config import Config
