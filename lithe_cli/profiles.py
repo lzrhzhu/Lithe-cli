@@ -83,6 +83,25 @@ def _clean_endpoint(data: dict) -> dict:
         v = data.get(k)
         if isinstance(v, int) and v > 0:
             out[k] = v
+    temperature = data.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        out["temperature"] = float(temperature)
+    max_tokens = data.get("max_tokens")
+    if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) \
+            and max_tokens > 0:
+        out["max_tokens"] = max_tokens
+    extra_body = data.get("extra_body")
+    if isinstance(extra_body, dict) and extra_body:
+        out["extra_body"] = extra_body
+    headers = data.get("default_headers")
+    if isinstance(headers, dict) and headers:
+        out["default_headers"] = headers
+    pricing = data.get("pricing")
+    if isinstance(pricing, dict) and pricing:
+        # keep numeric entries only; LLMConfig validates the exact contract
+        out["pricing"] = {k: v for k, v in pricing.items()
+                          if isinstance(v, (int, float))
+                          and not isinstance(v, bool)}
     cm = data.get("cached_models")
     if isinstance(cm, list) and cm:
         out["cached_models"] = [str(m) for m in cm if str(m).strip()]

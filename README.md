@@ -99,7 +99,12 @@ $ lithe run "总结 README.md 的要点，存到 SUMMARY.md"
 usage/context gauges; `--max-steps` caps the tool loop;
 `--context-window` enables fullness gauges; `--reasoning-effort LEVEL`
 sets the reasoning intensity for one invocation (flag > profile field;
-`/reasoning` adjusts it in-session).
+`/reasoning` adjusts it in-session). Run budgets end the turn with
+status `budget_exceeded` once crossed: `--max-cost USD` (needs a
+`pricing` table in the profile on endpoints that report no usage cost)
+and `--max-tokens N` (cumulative); both show progress lines in the
+sidebar and adjust via `/set` (`off` clears). Sampling:
+`--temperature` / `--max-output-tokens` (flag > profile field).
 
 ### Full-screen interface
 
@@ -111,7 +116,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 工具/待办、用量:
 
 ```text
- lithe 0.8.9 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+ lithe 0.9.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
 ╭──────────────────────────────────────╮╭──────────────────────────╮
 │ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
 │ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
@@ -137,10 +142,14 @@ you come back. Typing `/` shows matching commands above the prompt (`Tab`
 accepts; `/model`, `/profile`, `/set` complete their arguments too),
 and `↑`/`↓` recall the persistent input history. `Ctrl+C` cancels the
 current turn (a second press during the same turn force-exits) and exits
-when idle. Typing plain text mid-turn returns it to the input box with a
-note instead of dropping it; slash commands work while a turn runs. The
-transcript follows new output only while you're at the bottom — scroll
-up to re-read and your position sticks.
+when idle. Plain text typed mid-turn **steers** the running agent: it is
+queued into the kernel's steering inbox and injected as a user message at
+the next step boundary (rendered in the transcript; persistently
+recorded), so you can correct course while it works — texts that cannot
+be injected before the turn ends are honestly reported as dropped. Slash
+commands work while a turn runs. The transcript follows new output only
+while you're at the bottom — scroll up to re-read and your position
+sticks.
 
 Text selection uses the terminal's native `Shift+drag` (hide the sidebar
 with F2 first if it grabs both panes). Pipes and CI keep the plain
@@ -200,6 +209,8 @@ The kernel ships these as bundles; the CLI grants them per flag:
 | `--vision` | `image_info` / `analyze_image` | image probe is stdlib-only; analysis routes one vision call to the main endpoint |
 | `--document` | `document_info` / `analyze_document` | PDF/DOCX/XLSX/PPTX reading on the main endpoint; `/set document` toggles in-session |
 | `--document-format` | (dialect for `analyze_document`) | `inline-file` (OpenRouter family) / `files-api` (strict OpenAI upload) / `none` (probe only); default: profile field `document_format`, else provider preset |
+| `--max-cost USD` | (run budget) | the turn ends `budget_exceeded` once cumulative cost crosses it; on endpoints reporting no `usage.cost` add a profile `pricing` table (`{"prompt": 3, "completion": 15}` per 1M) — the preset providers' known prices work too |
+| `--max-tokens N` | (run budget) | cumulative token budget for the turn; `--max-output-tokens N` is the different per-call cap |
 | `--subagents` | `delegate` / `delegate_parallel` | kernel delegation on the default roster — `researcher` (read-only lookup, gains vision/document tools with those flags), `coder` (file edits + `run_code` with `--code`), `operator` (`run_command`/`download_file`, present only with `--shell`/`--download`); children inherit the endpoint and budgets, parallel workers share one live cost ceiling; `/set subagents` toggles in-session |
 | `--mcp SPEC` | whatever the servers expose | JSON array/object or `@file` (env `LITHE_MCP`); stdio and streamable-http; failed servers degrade gracefully |
 

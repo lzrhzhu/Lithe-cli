@@ -83,6 +83,9 @@ class TuiState:
         self.context_window = None
         self.context_percent = None
         self.reasoning_effort: str | None = None
+        # Run budgets (for the sidebar progress lines); None = no cap.
+        self.max_cost: float | None = None
+        self.max_total_tokens: int | None = None
         self.tools: list[dict] = []
         self.feed: list[tuple[str, str]] = []
         self.streaming = ""
@@ -208,6 +211,11 @@ class TuiState:
             self.say("err", str(ev.get("message") or "运行出错"))
         elif kind == "cancelled":
             self.say("warn", "（已取消）")
+        elif kind == "user_injected":
+            # Steering: a queued user text the kernel injected mid-run at a
+            # step boundary; render it as a user line so the transcript
+            # shows why the model's course changed.
+            self.say("user", str(ev.get("text") or ""))
         elif kind == "done":
             status = str(ev.get("status") or _STATUS_DONE)
             self.last_status = status

@@ -160,6 +160,36 @@ def build_parser() -> argparse.ArgumentParser:
             "--attempts", type=int, default=2, help="per-call retry attempts"
         )
         sp.add_argument(
+            "--temperature",
+            type=float,
+            default=None,
+            help="sampling temperature (default: profile field, else endpoint default)",
+        )
+        sp.add_argument(
+            "--max-output-tokens",
+            dest="max_tokens",
+            type=int,
+            default=None,
+            help="per-call output token cap (default: profile max_tokens, "
+            "else endpoint default); NOT the run budget --max-tokens",
+        )
+        sp.add_argument(
+            "--max-cost",
+            type=float,
+            default=None,
+            help="run cost budget in USD: the run ends with status "
+            "budget_exceeded once cumulative cost crosses it (needs a "
+            "pricing table on endpoints that report no usage cost)",
+        )
+        sp.add_argument(
+            "--max-tokens",
+            dest="max_total_tokens",
+            type=int,
+            default=None,
+            help="run total-token budget: ends with budget_exceeded once "
+            "cumulative tokens cross it",
+        )
+        sp.add_argument(
             "--reasoning-effort",
             metavar="LEVEL",
             default=None,
@@ -514,6 +544,24 @@ def _cmd_config(args: Any) -> int:
                 print(ui.kv("provider", saved["provider"]))
             if saved.get("document_format"):
                 print(ui.kv("document_format", saved["document_format"]))
+            ep = store.endpoint()  # full dict: sampling/vendor/pricing fields
+            if ep.get("context_window"):
+                print(ui.kv("context_window", f"{ep['context_window']:,}"))
+            if ep.get("temperature") is not None:
+                print(ui.kv("temperature", ep["temperature"]))
+            if ep.get("max_tokens"):
+                print(ui.kv("max_tokens", f"{ep['max_tokens']:,}"))
+            if ep.get("extra_body"):
+                import json as _json
+
+                print(ui.kv("extra_body",
+                            _json.dumps(ep["extra_body"], ensure_ascii=False)))
+            if ep.get("default_headers"):
+                print(ui.kv("default_headers",
+                            ",".join(ep["default_headers"])))
+            if ep.get("pricing"):
+                print(ui.kv("pricing", "、".join(
+                    f"{k}=${v}/1M" for k, v in ep["pricing"].items())))
             print(ui.kv("base_url", saved["base_url"]))
             print(ui.kv("api_key", masked))
             print(ui.kv("model", saved["model"]))

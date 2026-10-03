@@ -248,9 +248,10 @@ def test_run_mode_ctrl_c_cancels_one_shot_turn(tmp_path):
     asyncio.run(scenario())
 
 
-def test_mid_turn_text_restored_and_commands_still_work(tmp_path):
-    """Plain text typed mid-turn is not silently dropped (it returns to the
-    input box); slash commands dispatch while a turn runs, as in the REPL."""
+def test_mid_turn_text_steers_and_commands_still_work(tmp_path):
+    """Plain text typed mid-turn steers the running turn (queued into the
+    kernel inbox); slash commands dispatch while a turn runs. When the
+    model call never yields a step boundary, leftovers are reported."""
     async def scenario():
         release = asyncio.Event()
 
@@ -269,24 +270,27 @@ def test_mid_turn_text_restored_and_commands_still_work(tmp_path):
             await pilot.press("enter")
             await pilot.pause(0.2)
             assert app.state.running
-            # plain text mid-turn: warned and restored, not sent
+            # plain text mid-turn: queued for injection, not restored
             inp.value = "补充说明"
             await pilot.press("enter")
             await pilot.pause(0.1)
-            assert "未发送" in _conv_text(app)
-            assert app.query_one("#prompt").value == "补充说明"
+            assert "已排队" in _conv_text(app)
+            assert app.query_one("#prompt").value == ""
             # slash command mid-turn: dispatches normally
             inp.value = "/help"
             await pilot.press("enter")
             await pilot.pause(0.1)
             text = _conv_text(app)
             assert "命令" in text or "/model" in text
+            # the hung call never reaches a step boundary: the queued text
+            # cannot be injected and is honestly reported as dropped
             release.set()
             for _ in range(100):
                 await pilot.pause(0.05)
                 if not app.state.running:
                     break
             assert not app.state.running
+            assert "未能在本轮结束前注入" in _conv_text(app)
 
     asyncio.run(scenario())
 

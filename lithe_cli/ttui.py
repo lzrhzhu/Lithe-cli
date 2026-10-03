@@ -124,6 +124,10 @@ def sidebar_markup(state: TuiState) -> str:
     out.append(f"合计 {tokens:,}")
     out.append(f"本轮费用 ${turn_cost:.4f}")
     out.append(f"累计费用 ${cost:.4f}")
+    if state.max_cost is not None:
+        out.append(f"[dim]成本预算 ${cost:.4f} / ${state.max_cost:.2f}[/]")
+    if state.max_total_tokens is not None:
+        out.append(f"[dim]token 预算 {tokens:,} / {state.max_total_tokens:,}[/]")
     out.append(f"上下文 {context}")
     return "\n".join(out)
 
@@ -447,7 +451,7 @@ class LitheApp(App):
         title = ""
         if cid is not None:
             title = (self.wb.sessions.get(cid) or {}).get("title", "")
-        return TuiState(
+        st = TuiState(
             self.cfg.model or "(scripted)",
             str(self.cfg.workspace_dir.resolve()),
             self.cfg.max_steps,
@@ -456,12 +460,18 @@ class LitheApp(App):
             session_id=cid,
             session_title=title,
         )
+        st.max_cost = self.cfg.max_cost
+        st.max_total_tokens = self.cfg.max_total_tokens
+        return st
 
     def _refresh_meta(self) -> None:
         st = self.state
         st.model = self.cfg.model or "(scripted)"
         st.profile = self.cfg.profile or ""
         st.reasoning_effort = self.cfg.reasoning_effort
+        st.max_steps = self.cfg.max_steps
+        st.max_cost = self.cfg.max_cost
+        st.max_total_tokens = self.cfg.max_total_tokens
         if self.wb.current is not None:
             st.session_id = self.wb.current["id"]
             st.session_title = self.wb.current.get("title") or ""
@@ -604,11 +614,18 @@ class LitheApp(App):
         if not line:
             return
         if self.state.running and not line.startswith("/"):
-            # Plain text mid-turn is not silently discarded: it goes back
-            # into the input box for resubmitting when the turn ends.
-            # Slash commands still dispatch below — the workbench supports
-            # them while a turn runs (/model, /resume, ...), matching the
-            # plain REPL.
+            # Plain text mid-turn steers the running turn: queued into the
+            # kernel's inbox and injected as a user message at the next
+            # step boundary (user_injected event renders the line). When
+            # no turn is actually draining (one-shot mode), fall back to
+            # putting the text back in the input box. Slash commands still
+            # dispatch below — the workbench supports them mid-turn.
+            if self.wb.steer(line, self._current_cid()):
+                from .ui import truncate
+                self.state.say(
+                    "dim", f"（已排队，将在当前步骤后注入：{truncate(line, 48)}）")
+                self._sync_feed()
+                return
             self.query_one("#prompt", HistoryInput).value = line
             self.state.say("warn", "本轮还在进行中，未发送；文本已放回输入框，命令仍可用")
             self._sync_feed()

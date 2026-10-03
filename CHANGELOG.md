@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.0 (2026-10-03)
+
+The budgets-and-steering release: run budgets arrive as first-class CLI
+knobs, mid-turn input becomes real steering, and profiles round-trip the
+sampling/vendor/pricing fields the kernel already understood. Requires
+lithe ≥ 0.9.21 (steering persistence fix).
+
+- **run budgets** — `--max-cost USD` / `--max-tokens N` (cumulative) end
+  the turn with status `budget_exceeded` once crossed; `/set max-cost` /
+  `/set max-tokens` adjust in-session (`off` clears), and the sidebar
+  shows 成本预算 / token 预算 progress lines. On endpoints that report no
+  `usage.cost`, a profile `pricing` table (`{"prompt": 3,
+  "completion": 15}` per 1M tokens, `cached_prompt` optional) computes
+  call cost — the thing that makes `--max-cost` enforceable there.
+- **steering** — plain text submitted while a turn runs is queued into
+  the kernel's steering inbox and injected as a user message at the next
+  step boundary: the model incorporates it on its next call, the line is
+  rendered in the transcript (`user_injected`) and persistently
+  recorded. Texts that cannot be injected before the turn ends (e.g. the
+  model call never yields a step boundary) are reported as dropped
+  instead of vanishing. The plain REPL cannot steer (its input line is
+  unavailable while a turn runs).
+- **profile field passthrough** — hand-written profile fields now
+  survive loading and reach `LLMConfig`: `pricing` (above),
+  `temperature` / `max_tokens` (sampling; `--temperature` /
+  `--max-output-tokens` flags win over the profile), and
+  `extra_body` / `default_headers` (vendor request fields/headers for
+  gateways no preset covers — a provider preset's dict fields merge
+  key-wise underneath). `config --show` displays them all, and
+  `/set temperature` / `/set max-output-tokens` adjust in-session
+  (`off` = endpoint default).
+
 ## 0.8.9 (2026-10-03)
 
 Subagent delegation arrives as an opt-in capability — the kernel's

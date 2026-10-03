@@ -114,6 +114,14 @@ def build_llm(cfg: Config) -> LLMConfig:
         # Explicit dialect (flag/profile) overrides the preset default;
         # apply_preset skips the None override so the preset fills in.
         "document_format": cfg.document_format,
+        # Sampling + vendor passthrough + pricing: None skips (preset may
+        # fill extra_body/default_headers; dict fields merge per key with
+        # the explicit value winning per key).
+        "temperature": cfg.temperature,
+        "max_tokens": cfg.max_tokens,
+        "extra_body": cfg.extra_body,
+        "default_headers": cfg.default_headers,
+        "pricing": cfg.pricing,
     }
     # The CLI's transport field defaults to "chat" and is only overridden by
     # offline tests (custom transports); the default must not clobber a
@@ -188,6 +196,8 @@ def build_host(cfg: Config, reg: ToolRegistry) -> AgentHost:
         build_llm(cfg),
         store,
         max_steps=cfg.max_steps,
+        max_cost=cfg.max_cost,
+        max_total_tokens=cfg.max_total_tokens,
         build_system_prompt=lambda ctx, mode, anchor: prompt,
     )
 
@@ -334,6 +344,7 @@ async def execute(
     on_event=None,
     stop=None,
     conversation_id: int | None = None,
+    inbox=None,
 ) -> tuple[str, dict, Any]:
     """Run one task end-to-end; returns (run_id, done_event, host).
 
@@ -342,7 +353,9 @@ async def execute(
     footer — the caller renders from the events instead. ``stop`` is the
     kernel's cancellation handle, surfaced so Ctrl+C can cancel a turn
     without killing the process. ``conversation_id`` attaches the run to a
-    stored session (kernel host already consumes ctx.extra).
+    stored session (kernel host already consumes ctx.extra). ``inbox`` is
+    the steering channel: a queue of user texts the kernel drains at step
+    boundaries and injects as user messages (see AgentRuntime.run).
     """
     reg = build_registry(cfg)
     host = build_host(cfg, reg)
@@ -369,7 +382,8 @@ async def execute(
     ev: dict = {}
     pending: dict[str, float] = {}
     try:
-        async for ev in host.run(ctx, task, history=history, stop=stop):
+        async for ev in host.run(ctx, task, history=history, stop=stop,
+                                 inbox=inbox):
             if on_event is not None:
                 on_event(ev)
             else:

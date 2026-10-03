@@ -48,6 +48,10 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
     ("max-steps", "max_steps", "工具循环步数上限", "int"),
     ("timeout", "timeout", "单次模型调用超时（秒）", "float"),
     ("attempts", "attempts", "模型调用重试次数", "int"),
+    ("temperature", "temperature", "采样温度（off = 端点默认）", "float"),
+    ("max-output-tokens", "max_tokens", "单次调用输出上限（off = 端点默认）", "int"),
+    ("max-cost", "max_cost", "单轮成本预算 $（off = 不限）", "float"),
+    ("max-tokens", "max_total_tokens", "单轮 token 预算（off = 不限）", "int"),
     ("reasoning-effort", "reasoning_effort",
      "推理强度（off/minimal/low/medium/high，原样透传）", "enum"),
 ]
@@ -55,6 +59,9 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
 # or rendering knobs): flipping them invalidates the /tools cache.
 _TOOL_AFFECTING = {"shell", "code", "vision", "document", "download",
                    "subagents"}
+# Numeric knobs that accept "off"/"none" to clear back to None (unset),
+# and (for temperature) a zero value.
+_NULLABLE = {"temperature", "max-output-tokens", "max-cost", "max-tokens"}
 _TRUTHY = {"on", "true", "1", "开"}
 _FALSY = {"off", "false", "0", "关"}
 # Reasoning levels offered by /reasoning; any other typed token passes
@@ -352,7 +359,13 @@ class Workbench:
     async def _run_turn(self, conv: dict, task: str) -> None:
         cid = conv["id"]
         stop = asyncio.Event()
-        handle = {"task": asyncio.current_task(), "stop": stop}
+        # Steering inbox: texts submitted while this turn runs (see steer);
+        # the kernel drains it at step boundaries and injects them as user
+        # messages. The wrap-up step skips the drain — leftovers are
+        # reported below instead of vanishing.
+        inbox: asyncio.Queue = asyncio.Queue()
+        handle = {"task": asyncio.current_task(), "stop": stop,
+                  "inbox": inbox}
         existing = self.turns.get(cid)
         if existing is not None and existing.get("task") not in (None, handle["task"]):
             self._emit(cid, {"type": "error",
@@ -377,6 +390,7 @@ class Workbench:
                 conversation_id=cid,
                 on_event=lambda ev: self._emit(cid, ev),
                 stop=stop,
+                inbox=inbox,
             )
             status = done.get("status")
             if self.current and self.current["id"] == cid:
@@ -390,6 +404,18 @@ class Workbench:
             status = "failed"
         finally:
             self.turns.pop(cid, None)
+            leftover = 0
+            while not inbox.empty():
+                try:
+                    inbox.get_nowait()
+                    leftover += 1
+                except asyncio.QueueEmpty:
+                    break
+            if leftover:
+                self._emit(cid, {
+                    "type": "command_output", "style": "warn",
+                    "text": f"（{leftover} 条运行中输入未能在本轮结束前注入，已丢弃）",
+                })
             self._emit(cid, {"type": "session_idle", "conv_id": cid,
                              "run_id": rid, "status": status})
 
@@ -434,6 +460,27 @@ class Workbench:
             handle["stop"].set()
             return True
         return False
+
+    def steer(self, text: str, conv_id: int | None = None) -> bool:
+        """Queue a user text into the running turn's steering inbox.
+
+        The kernel drains the inbox at step boundaries and injects each
+        text as a user message (announced via ``user_injected`` events),
+        so the model incorporates it on its next call. False when no turn
+        is running for the session (the caller falls back to normal
+        submit behavior).
+        """
+        if not text.strip():
+            return False
+        cid = self._cid(conv_id)
+        if cid is None:
+            return False
+        handle = self.turns.get(cid)
+        inbox = handle.get("inbox") if handle else None
+        if inbox is None:
+            return False
+        inbox.put_nowait(text)
+        return True
 
     # -- undo -------------------------------------------------------------------
 
@@ -517,17 +564,27 @@ class Workbench:
             # endpoint's call (400 diagnostics catch mistakes).
             new = None if token.lower() == "off" else token
         else:
+            token = value.strip().lower()
             if not value.strip():
                 result.say("err", f"用法：/set {ukey} 值（当前 {current}）")
                 return result
-            try:
-                new = int(value.strip()) if kind == "int" else float(value.strip())
-            except ValueError:
-                result.say("err", f"{ukey} 需要一个{'整数' if kind == 'int' else '数值'}")
-                return result
-            if kind == "int" and new < 1 or kind == "float" and new <= 0:
-                result.say("err", f"{ukey} 必须为正数")
-                return result
+            if token in ("off", "none") and ukey in _NULLABLE:
+                new = None  # clear back to "unset / endpoint default"
+            else:
+                try:
+                    new = int(value.strip()) if kind == "int" \
+                        else float(value.strip())
+                except ValueError:
+                    result.say(
+                        "err",
+                        f"{ukey} 需要一个{'整数' if kind == 'int' else '数值'}"
+                        "（off 清除）")
+                    return result
+                # positivity, except temperature where 0 is a valid setting
+                if ukey != "temperature" and (
+                        kind == "int" and new < 1 or kind == "float" and new <= 0):
+                    result.say("err", f"{ukey} 必须为正数")
+                    return result
         if new == current:
             result.say("dim", f"{label}：已是 {new if new is not None else 'off'}")
             return result

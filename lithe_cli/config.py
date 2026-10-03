@@ -71,6 +71,26 @@ class Config:
     # delegate_parallel on the CLI's default roster. Off by default — each
     # delegation is a full agent run, so token spend multiplies.
     subagents: bool = False
+    # Run budgets (kernel AgentHost): the run ends with status
+    # "budget_exceeded" once cumulative cost / tokens cross the cap. None
+    # disables the cap.
+    max_cost: float | None = None
+    max_total_tokens: int | None = None
+    # Sampling knobs forwarded to LLMConfig (None = endpoint default).
+    temperature: float | None = None
+    # Per-call output cap (LLMConfig.max_tokens); the run-level budget is
+    # max_total_tokens above — different things despite similar names.
+    max_tokens: int | None = None
+    # Vendor request fields / headers (LLMConfig passthrough). Usually
+    # contributed by a provider preset; a profile can carry its own for
+    # gateways no preset knows.
+    extra_body: dict | None = None
+    default_headers: dict | None = None
+    # Per-1M-token price table (LLMConfig.pricing): computes call cost on
+    # endpoints that report no usage.cost, which is what makes max_cost
+    # actually enforceable there. {"prompt": float, "completion": float,
+    # "cached_prompt": float?}
+    pricing: dict | None = None
     store_dir: Path = field(default_factory=lambda: default_store_dir())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
     user_id: str = DEFAULT_USER
@@ -300,6 +320,17 @@ def load_config(args: Any) -> Config:
                          and document_format.strip() else None),
         document=g("document", False),
         subagents=g("subagents", False),
+        max_cost=g("max_cost", None),
+        max_total_tokens=g("max_total_tokens", None),
+        temperature=(
+            g("temperature", None) if g("temperature", None) is not None
+            else saved.get("temperature")),
+        max_tokens=(
+            g("max_tokens", None) if g("max_tokens", None) is not None
+            else saved.get("max_tokens")),
+        extra_body=saved.get("extra_body"),
+        default_headers=saved.get("default_headers"),
+        pricing=saved.get("pricing"),
         reasoning_effort=(effort.strip() if isinstance(effort, str) and effort.strip()
                           else None),
         store_dir=store_dir,
