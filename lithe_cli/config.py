@@ -67,6 +67,10 @@ class Config:
     # in-session profile switches re-resolve it). None = not explicit.
     document_format: str | None = None
     document: bool = False
+    # Subagent delegation (kernel bundles.subagents): grants delegate /
+    # delegate_parallel on the CLI's default roster. Off by default — each
+    # delegation is a full agent run, so token spend multiplies.
+    subagents: bool = False
     store_dir: Path = field(default_factory=lambda: default_store_dir())
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
     user_id: str = DEFAULT_USER
@@ -295,6 +299,7 @@ def load_config(args: Any) -> Config:
                          if isinstance(document_format, str)
                          and document_format.strip() else None),
         document=g("document", False),
+        subagents=g("subagents", False),
         reasoning_effort=(effort.strip() if isinstance(effort, str) and effort.strip()
                           else None),
         store_dir=store_dir,

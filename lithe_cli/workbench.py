@@ -25,7 +25,7 @@ from collections.abc import Callable
 from lithe import replay_messages
 from lithe.bundles import JsonlRunStore
 
-from .agent import build_registry, execute, undo
+from .agent import execute, tool_names, undo
 from .commands import ActionResult, help_text
 from .config import Config
 from .profiles import ProfileStore, fetch_models
@@ -42,6 +42,7 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
     ("vision", "vision", "image_info / analyze_image（图像理解）", "bool"),
     ("document", "document", "document_info / analyze_document（文档理解）", "bool"),
     ("download", "download", "download_file（网络下载）", "bool"),
+    ("subagents", "subagents", "delegate / delegate_parallel（子代理委派）", "bool"),
     ("stream", "stream", "流式输出 token", "bool"),
     ("verbose", "verbose", "显示 usage / reasoning 事件", "bool"),
     ("max-steps", "max_steps", "工具循环步数上限", "int"),
@@ -52,7 +53,8 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
 ]
 # Settings whose change alters the next turn's tool registry (vs. sampling
 # or rendering knobs): flipping them invalidates the /tools cache.
-_TOOL_AFFECTING = {"shell", "code", "vision", "document", "download"}
+_TOOL_AFFECTING = {"shell", "code", "vision", "document", "download",
+                   "subagents"}
 _TRUTHY = {"on", "true", "1", "开"}
 _FALSY = {"off", "false", "0", "关"}
 # Reasoning levels offered by /reasoning; any other typed token passes
@@ -542,6 +544,8 @@ class Workbench:
             result.say("warn", "run_command 以当前用户权限执行、非沙箱、结果不可撤销")
         elif ukey == "code" and new is True:
             result.say("dim", "（无 bubblewrap 的环境回退为非沙箱直通执行）")
+        elif ukey == "subagents" and new is True:
+            result.say("warn", "委派子代理会成倍放大 token 花费；并行子任务共享同一预算上限")
         return result
 
     # -- dispatch -----------------------------------------------------------------
@@ -572,7 +576,7 @@ class Workbench:
             return result
         if cmd == "tools":
             if self._tool_names is None:
-                self._tool_names = sorted(build_registry(self.cfg).names())
+                self._tool_names = tool_names(self.cfg)
             result.say("dim", "已注册工具：" + "、".join(self._tool_names))
             return result
         if cmd == "new":

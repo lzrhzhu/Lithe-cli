@@ -111,7 +111,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 工具/待办、用量:
 
 ```text
- lithe 0.8.8 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+ lithe 0.8.9 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
 ╭──────────────────────────────────────╮╭──────────────────────────╮
 │ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
 │ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
@@ -200,11 +200,13 @@ The kernel ships these as bundles; the CLI grants them per flag:
 | `--vision` | `image_info` / `analyze_image` | image probe is stdlib-only; analysis routes one vision call to the main endpoint |
 | `--document` | `document_info` / `analyze_document` | PDF/DOCX/XLSX/PPTX reading on the main endpoint; `/set document` toggles in-session |
 | `--document-format` | (dialect for `analyze_document`) | `inline-file` (OpenRouter family) / `files-api` (strict OpenAI upload) / `none` (probe only); default: profile field `document_format`, else provider preset |
+| `--subagents` | `delegate` / `delegate_parallel` | kernel delegation on the default roster — `researcher` (read-only lookup, gains vision/document tools with those flags), `coder` (file edits + `run_code` with `--code`), `operator` (`run_command`/`download_file`, present only with `--shell`/`--download`); children inherit the endpoint and budgets, parallel workers share one live cost ceiling; `/set subagents` toggles in-session |
 | `--mcp SPEC` | whatever the servers expose | JSON array/object or `@file` (env `LITHE_MCP`); stdio and streamable-http; failed servers degrade gracefully |
 
 ```bash
 $ lithe run --code "用 run_code 验证 results.csv 的行数"
 $ lithe run --document "总结 report.pdf 的结论，存到 NOTES.md"
+$ lithe run --subagents "先让 researcher 摸清 src 结构，再让 coder 分头改"
 $ lithe run --shell "检查当前目录的项目状态"
 $ lithe chat --skills ~/my-skills --mcp @~/mcp.json
 ```

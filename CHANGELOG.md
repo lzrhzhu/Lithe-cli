@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.9 (2026-10-03)
+
+Subagent delegation arrives as an opt-in capability — the kernel's
+delegation bundle wired onto the CLI's tool system.
+
+- **`--subagents`** — grants `delegate` / `delegate_parallel` over the
+  CLI's default roster, whose tool lists filter against the actually
+  registered tools so capability flags shape the workers automatically:
+  `researcher` (read-only lookup; gains `image_info`/`analyze_image` with
+  `--vision` and `document_info`/`analyze_document` with `--document`),
+  `coder` (file edits via edit_file/apply_patch plus `run_code`/`run_file`
+  with `--code`), and `operator` (`run_command`/`download_file`, present
+  only with `--shell`/`--download`). Children inherit the endpoint, retry
+  policy and budgets from the host; their turns are recorded under the
+  parent run tagged with the subagent id, and parallel workers share one
+  live cost ceiling (kernel ≥ 0.9.20).
+- **`/set subagents`（F5）** — in-session toggle with the next-turn
+  semantics of every tool-affecting knob; enabling restates the
+  token-spend warning, `/tools` lists the delegation pair, and the system
+  prompt gains a delegation line when on.
+- **`doctor`** reports the delegation state alongside the other
+  capabilities.
+
 ## 0.8.8 (2026-10-03)
 
 A one-fix follow-up to 0.8.7's scroll behavior, caught by CI timing on

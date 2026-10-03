@@ -12,7 +12,8 @@ Everything here maps lithe's host contract onto CLI defaults:
   library), ``--vision`` (image probe/analysis), ``--document``
   (PDF/OOXML probe/analysis — dialect from ``--document-format`` > profile
   ``document_format`` > provider preset), ``--download`` (SSRF-guarded
-  network fetch) and ``--mcp`` (external MCP servers);
+  network fetch), ``--mcp`` (external MCP servers) and ``--subagents``
+  (kernel delegation on the CLI's default roster);
 - undo — the bundled tools register reverters, so ``lithe undo`` works with
   zero configuration.
 """
@@ -87,6 +88,10 @@ def build_system_prompt(cfg: Config) -> str:
     if cfg.document:
         extras.append("可以用 analyze_document 直接阅读 PDF/DOCX/XLSX/PPTX 文档并回答关于它的具体问题；"
                       "确定元信息（格式/页数）先用 document_info。")
+    if cfg.subagents:
+        extras.append("可以用 delegate 把独立子任务委派给子代理（可用名单见工具说明：检索/编码/操作），"
+                      "互不依赖的子任务用 delegate_parallel 并行委派；"
+                      "子代理与本对话共享预算，汇报时合并它们的结果。")
     if not extras:
         return SYSTEM_PROMPT_BASE
     return SYSTEM_PROMPT_BASE + "".join(extras)
@@ -187,6 +192,88 @@ def build_host(cfg: Config, reg: ToolRegistry) -> AgentHost:
     )
 
 
+# -- subagent delegation (--subagents) ----------------------------------------
+#
+# The kernel's delegation bundle (lithe.bundles.subagents) is host data: a
+# roster of SubagentSpecs + an engine over the host. The CLI's default roster
+# filters each spec's tool list against what is actually registered, so a
+# capability flag (--vision, --code, …) automatically shapes the workers.
+
+_RESEARCHER_PROMPT = (
+    "你是只读检索子代理。用文件/文档/图像工具查找、阅读并汇总信息，绝不修改、新建或删除任何文件。"
+    "输出简明的发现清单，标注出处路径；找不到就如实说找不到。"
+)
+_CODER_PROMPT = (
+    "你是编码子代理。先用只读工具了解现状，再做最小必要的修改"
+    "（优先 edit_file / apply_patch 局部修改，仅新建文件或确需重写时用 write_file），"
+    "可用 run_code 验证；完成后简述改了什么、为什么。"
+)
+_OPERATOR_PROMPT = (
+    "你是操作子代理。用 run_command 执行命令、download_file 下载文件来完成指定操作。"
+    "命令以当前用户权限运行且副作用不可撤销，执行前先确认必要性；输出关键结果与退出码。"
+)
+
+
+def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry):
+    """Register delegate/delegate_parallel over the CLI's default roster.
+
+    Must run after ``build_host`` (the engine shares the host's registry,
+    store and LLM config — children inherit the endpoint, retry policy and
+    budgets; parallel siblings share one live cost ceiling, kernel ≥0.9.20).
+    Returns the engine (roster inspection for hosts and tests).
+    """
+    from lithe.bundles.subagents import (
+        SubagentEngine,
+        SubagentRoster,
+        SubagentSpec,
+        register_delegate_tools,
+    )
+
+    available = set(reg.names())
+
+    def pick(names: list[str]) -> list[str]:
+        return [n for n in names if n in available]
+
+    specs = [
+        SubagentSpec(
+            "researcher", "检索员",
+            "只读检索：在工作区查找、阅读、汇总信息与文档（不修改文件）",
+            pick(["read_file", "list_files", "search_files", "glob_files",
+                  "image_info", "analyze_image",
+                  "document_info", "analyze_document"]),
+            _RESEARCHER_PROMPT, read_only=True),
+        SubagentSpec(
+            "coder", "编码员",
+            "读写代码：定位、修改、验证工作区内的代码",
+            pick(["read_file", "write_file", "edit_file", "apply_patch",
+                  "list_files", "search_files", "glob_files",
+                  "run_code", "run_file"]),
+            _CODER_PROMPT),
+    ]
+    op_core = pick(["run_command", "download_file"])
+    if op_core:
+        specs.append(SubagentSpec(
+            "operator", "操作员",
+            "执行主机命令与网络下载等操作",
+            op_core + pick(["read_file", "list_files"]),
+            _OPERATOR_PROMPT))
+    # A spec whose tool list filtered to nothing can do nothing meaningful;
+    # researcher/coder always keep the ever-present file tools.
+    specs = [s for s in specs if s.tools]
+    engine = SubagentEngine(host, SubagentRoster(specs))
+    register_delegate_tools(reg, engine, parallel=True)
+    return engine
+
+
+def tool_names(cfg: Config) -> list[str]:
+    """Sorted tool names for /tools: the registry plus the delegation pair
+    when enabled (registered later against the host, same names)."""
+    names = sorted(build_registry(cfg).names())
+    if cfg.subagents:
+        names = sorted(names + ["delegate", "delegate_parallel"])
+    return names
+
+
 def render_event(
     ev: dict,
     verbose: bool = False,
@@ -259,6 +346,8 @@ async def execute(
     """
     reg = build_registry(cfg)
     host = build_host(cfg, reg)
+    if cfg.subagents:
+        register_subagents(cfg, host, reg)
     rid = run_id or uuid.uuid4().hex[:12]
     extra = {"conversation_id": conversation_id} if conversation_id is not None else {}
     ctx = AgentContext(run_id=rid, user_id=cfg.user_id, extra=extra)
