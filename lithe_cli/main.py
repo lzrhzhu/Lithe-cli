@@ -498,7 +498,9 @@ def _cmd_doctor() -> int:
 
 
 def _cmd_run(cfg: Any, task: str) -> int:
-    _, done, _ = asyncio.run(execute(cfg, task))
+    from .agent import interactive_approver
+
+    _, done, _ = asyncio.run(execute(cfg, task, approver=interactive_approver()))
     return 0 if done.get("status") == "done" else 1
 
 
@@ -611,9 +613,11 @@ def _chat_loop(
     title: str | None = None,
 ) -> int:
     """Plain (non-TTY) chat: same Workbench and commands as the full screen."""
+    from .agent import interactive_approver
     from .workbench import Workbench
 
     wb = Workbench(cfg)
+    wb.approver = interactive_approver()  # y/n on stdin when a TTY exists
     opening = wb.open(
         resume=resume, continue_latest=continue_latest, title=title
     )

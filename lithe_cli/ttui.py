@@ -352,6 +352,34 @@ class PickerModal(ModalScreen):
             row.children[0].update(label)
 
 
+# -- command approval --------------------------------------------------------
+
+class ConfirmModal(ModalScreen):
+    """y/n on a destructive run_command: y allows, n/Esc refuses."""
+
+    BINDINGS = [
+        Binding("y", "allow", "允许"),
+        Binding("n", "refuse", "拒绝"),
+        Binding("escape", "refuse", "拒绝", show=False),
+    ]
+
+    def __init__(self, command: str):
+        super().__init__()
+        self.command = command
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker"):
+            yield Static("⚠ 破坏性命令需确认", id="picker-title")
+            yield Static(self.command, id="picker-hint")
+            yield Static("y 允许执行 · n/Esc 拒绝", id="picker-hint")
+
+    def action_allow(self) -> None:
+        self.dismiss(True)
+
+    def action_refuse(self) -> None:
+        self.dismiss(False)
+
+
 # -- the app ----------------------------------------------------------------------
 
 class LitheApp(App):
@@ -418,6 +446,9 @@ class LitheApp(App):
         from .workbench import Workbench
 
         self.wb = Workbench(self.cfg)
+        # Destructive run_command approval rides a modal; the turn task and
+        # the app share one loop, so the middleware can await the human.
+        self.wb.approver = self.confirm_command
         self.todo_store = JsonTodoStore(todo_store_path(self.cfg))
         self.version = __version__
         prompt = self.query_one("#prompt", HistoryInput)
@@ -940,6 +971,27 @@ class LitheApp(App):
 
     # -- one-shot run mode --------------------------------------------------------
 
+    async def confirm_command(self, command: str) -> bool:
+        """Await a human y/n on a destructive command (guard middleware).
+
+        Bounded: an abandoned modal times out as a refusal instead of
+        wedging the turn forever; any UI failure also refuses.
+        """
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        def _resolved(result) -> None:
+            if not fut.done():
+                fut.set_result(bool(result))
+
+        try:
+            self.push_screen(ConfirmModal(command), _resolved)
+        except Exception:  # noqa: BLE001 — a broken UI denies, never runs
+            return False
+        try:
+            return await asyncio.wait_for(fut, timeout=300)
+        except Exception:  # noqa: BLE001 — timeout / cancelled → refuse
+            return False
+
     async def _run_one_shot(self, text: str) -> None:
         from .agent import execute
 
@@ -952,7 +1004,7 @@ class LitheApp(App):
         self._refresh_chrome()
         try:
             await execute(self.cfg, text, on_event=self.state.on_event,
-                          stop=stop)
+                          stop=stop, approver=self.confirm_command)
         except Exception as exc:  # noqa: BLE001
             self.state.say("err", f"运行出错：{exc}")
         finally:

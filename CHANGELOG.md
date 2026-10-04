@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.3 (2026-10-04)
+
+The command-guard round: destructive shell commands now need a human
+yes. Requires lithe ≥ 0.9.24 (`classify_command` / `make_command_guard`).
+
+- **dangerous-command guard on `run_command`** — catastrophic commands
+  (`rm -rf /`, `mkfs`, `format c:` …) are refused outright;
+  destructive-but-scoped ones (`rm -r <path>`, `git push --force`,
+  `sudo`, `chmod -R` …) ask first, each frontend through its own
+  channel: the Textual TUI shows a y/n modal (n/Esc or an abandoned
+  modal refuses; 300 s cap so a forgotten dialog can't wedge the turn),
+  the plain REPL asks y/N on stdin when it is a TTY, and non-TTY runs —
+  with nobody to ask — deny with guidance, so piped agents never run
+  destructive commands silently.
+- **publish workflow** — `.github/workflows/publish.yml` (PyPI trusted
+  publishing on release, mirroring the kernel repo's flow).
+
 ## 0.9.2 (2026-10-03)
 
 - **live turn timer** — while a turn runs, the Textual footer and sidebar

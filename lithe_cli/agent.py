@@ -20,12 +20,14 @@ Everything here maps lithe's host contract onto CLI defaults:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
 import sys
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +39,7 @@ from lithe.bundles import (
     Workspace,
     undo_run,
 )
-from lithe.bundles.command import register_command_tools
+from lithe.bundles.command import make_command_guard, register_command_tools
 from lithe.bundles.download import register_download_tools
 from lithe.bundles.patch import register_apply_patch_tool
 from lithe.bundles.workspace import register_file_tools
@@ -141,8 +143,13 @@ def build_llm(cfg: Config) -> LLMConfig:
     return LLMConfig(**overrides)
 
 
-def build_registry(cfg: Config) -> ToolRegistry:
-    """Register the CLI's tool set against the configured workspace."""
+def build_registry(cfg: Config, approver: Callable[[str], Awaitable[bool]] | None = None) -> ToolRegistry:
+    """Register the CLI's tool set against the configured workspace.
+
+    ``approver`` is the human-confirmation channel for destructive
+    ``run_command`` calls (the kernel guard's "approve" tier); without one
+    those are denied with guidance instead of running silently.
+    """
     reg = ToolRegistry()
 
     def workspace_for(ctx) -> Workspace:
@@ -165,6 +172,10 @@ def build_registry(cfg: Config) -> ToolRegistry:
         register_command_tools(
             reg, lambda ctx: cfg.workspace_dir.resolve(), CommandRunner()
         )
+        # Dangerous-command guard: catastrophic commands never run; the
+        # destructive-but-scoped tier (rm -r <path>, git push --force,
+        # sudo, ...) asks the approver first.
+        reg.add_middleware(make_command_guard(approver))
     if cfg.skills_dir is not None:
         from lithe.bundles.skills import SkillLibrary, register_skill_tool
 
@@ -350,6 +361,25 @@ def render_event(
             print(ui.reasoning(digest[:120]))
 
 
+def interactive_approver() -> Callable[[str], Awaitable[bool]] | None:
+    """A stdin y/n approver for interactive line-mode front-ends.
+
+    Returns None on a non-TTY stdin (piped/scripted runs): nobody can
+    answer, so the guard's destructive tier denies instead of hanging.
+    """
+    if not sys.stdin.isatty():
+        return None
+
+    async def approver(command: str) -> bool:
+        from . import prompts
+
+        preview = command if len(command) <= 90 else command[:87] + "..."
+        return await asyncio.to_thread(
+            prompts.yes_no, f"⚠ 破坏性命令需确认，允许执行：{preview}", False)
+
+    return approver
+
+
 async def execute(
     cfg: Config,
     task: str,
@@ -359,6 +389,7 @@ async def execute(
     stop=None,
     conversation_id: int | None = None,
     inbox=None,
+    approver: Callable[[str], Awaitable[bool]] | None = None,
 ) -> tuple[str, dict, Any]:
     """Run one task end-to-end; returns (run_id, done_event, host).
 
@@ -371,7 +402,7 @@ async def execute(
     the steering channel: a queue of user texts the kernel drains at step
     boundaries and injects as user messages (see AgentRuntime.run).
     """
-    reg = build_registry(cfg)
+    reg = build_registry(cfg, approver)
     host = build_host(cfg, reg)
     if cfg.subagents:
         register_subagents(cfg, host, reg)

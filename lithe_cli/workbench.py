@@ -76,6 +76,10 @@ class Workbench:
         self.store = JsonlRunStore(cfg.store_dir)
         self.sessions = SessionManager(self.store, cfg.user_id)
         self.current: dict | None = None
+        # Human-confirmation channel for destructive run_command calls
+        # (kernel guard). Line-mode front-ends install a stdin y/n approver;
+        # the Textual TUI installs a modal one. None → deny with guidance.
+        self.approver = None
         self.turns: dict[int, dict] = {}
         self.subscribers: list[Callable[[int, dict], None]] = []
         self._tool_names: list[str] | None = None
@@ -391,6 +395,7 @@ class Workbench:
                 on_event=lambda ev: self._emit(cid, ev),
                 stop=stop,
                 inbox=inbox,
+                approver=self.approver,
             )
             status = done.get("status")
             if self.current and self.current["id"] == cid:
