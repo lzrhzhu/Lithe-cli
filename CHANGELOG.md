@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.9.5 (2026-10-04)
+## 0.9.4 (2026-10-04)
 
-The delegation-default round: subagent delegation is included by default.
-Requires lithe ≥ 0.9.26 (parallel write safety, per-task delegation
-timeouts, mode fence).
+Renumbered baseline: the PyPI release history was cleaned up (old
+releases deleted; their version numbers and filenames are permanently
+retired by PyPI) and the published line restarts here. This release
+contains everything from the rounds previously numbered 0.9.4 and 0.9.5.
+Requires lithe ≥ 0.9.3.
 
 - **`--subagents` now defaults to on** — the default roster only carries
   already-registered tools (researcher filters to the read tools, coder to
@@ -15,12 +17,6 @@ timeouts, mode fence).
   live cost ceiling) and cancellation as before. `--no-subagents` (or
   `/set subagents off`) opts out; the enabling `/set` warning about token
   amplification is unchanged.
-
-## 0.9.4 (2026-10-04)
-
-The system-prompt round: sharper ground rules, one capability per line.
-Requires lithe ≥ 0.9.25 for the localized todos tool descriptions.
-
 - **`SYSTEM_PROMPT_BASE` restructured** — the base prompt is now
   line-per-topic (role+workspace / paths / file editing / failure
   recovery / todos / output) instead of one run-on paragraph, and states
