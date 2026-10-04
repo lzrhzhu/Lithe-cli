@@ -9,7 +9,7 @@ silently hitting some third-party URL. Resolution order is flag > env >
 interactive terminal a missing endpoint triggers the wizard instead of
 the refusal — see :mod:`lithe_cli.setup`.
 
-Capability flags (all off unless asked for):
+Capability flags (off unless asked for, except where noted):
 
 - ``--code``       sandboxed ``run_code`` / ``run_file`` tools (bwrap when
                    available, passthrough otherwise);
@@ -23,7 +23,11 @@ Capability flags (all off unless asked for):
 - ``--document``   ``document_info`` + ``analyze_document`` (PDF/OOXML
                     reading on the main endpoint; the content-block dialect
                     comes from ``--document-format`` > the profile's
-                    ``document_format`` field > the provider preset).
+                    ``document_format`` field > the provider preset);
+- ``--subagents``  delegate/delegate_parallel on the default roster; ON by
+                   default — the roster reuses already-enabled tools only
+                   (no new powers), so this is a spend selector, not a
+                   security gate; ``--no-subagents`` disables.
 """
 
 from __future__ import annotations
@@ -68,9 +72,12 @@ class Config:
     document_format: str | None = None
     document: bool = False
     # Subagent delegation (kernel bundles.subagents): grants delegate /
-    # delegate_parallel on the CLI's default roster. Off by default — each
-    # delegation is a full agent run, so token spend multiplies.
-    subagents: bool = False
+    # delegate_parallel on the CLI's default roster. ON by default — the
+    # roster only carries already-registered tools (delegation adds no new
+    # powers; workers inherit the same sandbox, guards and budgets), so the
+    # knob is a token-spend selector, not a security gate. --no-subagents
+    # (or /set subagents off) opts out.
+    subagents: bool = True
     # Run budgets (kernel AgentHost): the run ends with status
     # "budget_exceeded" once cumulative cost / tokens cross the cap. None
     # disables the cap.
@@ -319,7 +326,7 @@ def load_config(args: Any) -> Config:
                          if isinstance(document_format, str)
                          and document_format.strip() else None),
         document=g("document", False),
-        subagents=g("subagents", False),
+        subagents=g("subagents", True),
         max_cost=g("max_cost", None),
         max_total_tokens=g("max_total_tokens", None),
         temperature=(

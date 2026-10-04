@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.5 (2026-10-04)
+
+The delegation-default round: subagent delegation is included by default.
+Requires lithe ≥ 0.9.26 (parallel write safety, per-task delegation
+timeouts, mode fence).
+
+- **`--subagents` now defaults to on** — the default roster only carries
+  already-registered tools (researcher filters to the read tools, coder to
+  the file tools, operator exists only with `--shell`/`--download`), so
+  delegation grants no power the run lacks: it is a token-spend selector,
+  not a security gate, and no longer demands an opt-in. Workers inherit
+  the same sandbox, command guard, budgets (parallel siblings share one
+  live cost ceiling) and cancellation as before. `--no-subagents` (or
+  `/set subagents off`) opts out; the enabling `/set` warning about token
+  amplification is unchanged.
+
+## 0.9.4 (2026-10-04)
+
+The system-prompt round: sharper ground rules, one capability per line.
+Requires lithe ≥ 0.9.25 for the localized todos tool descriptions.
+
+- **`SYSTEM_PROMPT_BASE` restructured** — the base prompt is now
+  line-per-topic (role+workspace / paths / file editing / failure
+  recovery / todos / output) instead of one run-on paragraph, and states
+  two ground rules the model previously had to learn by failure: file
+  paths are workspace-relative (no absolute paths, no `../` outside the
+  root), and a failed tool call means read the returned error, fix the
+  arguments and retry — not resend verbatim. The locked guidance
+  (prefer `edit_file`/`apply_patch` for local edits, todo-planning
+  limits, concise Chinese reporting) is unchanged.
+- **capability extras get their own lines** — `build_system_prompt`
+  concatenated enabled-capability sentences straight onto the base
+  prompt's last sentence (`…汇报结果。可以用 run_code…`); each
+  capability is now a separate line, so the model reads one rule per
+  line and the "one line per capability" docstring is finally true.
+
 ## 0.9.3 (2026-10-04)
 
 The command-guard round: destructive shell commands now need a human

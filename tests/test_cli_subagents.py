@@ -40,12 +40,26 @@ DELEGATE_SCRIPT = [
 ]
 
 
-def test_delegation_disabled_by_default(tmp_path):
+def test_delegation_enabled_by_default_with_opt_out(tmp_path):
+    """子代理委派默认包含（roster 只复用已启用工具，不新增能力），
+    --no-subagents 显式退出。"""
+    from lithe_cli.main import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["run", "t"]).subagents is True
+    assert parser.parse_args(["run", "--no-subagents", "t"]).subagents is False
+    assert parser.parse_args(["run", "--subagents", "t"]).subagents is True
+
     cfg = make_config(tmp_path, DELEGATE_SCRIPT)
-    reg = build_registry(cfg)
-    assert reg.spec("delegate") is None and reg.spec("delegate_parallel") is None
-    assert "delegate" not in tool_names(cfg)
-    assert "delegate" not in build_system_prompt(Config())
+    assert cfg.subagents is True
+    assert "delegate" in tool_names(cfg)
+    assert "delegate" in build_system_prompt(Config())
+
+    # opting out keeps the delegation pair off the registry-facing surface
+    off = make_config(tmp_path / "off", [])
+    off.subagents = False
+    assert "delegate" not in tool_names(off)
+    assert "delegate" not in build_system_prompt(off)
 
 
 def test_delegation_runs_and_records_child_messages(tmp_path, capsys):
@@ -97,9 +111,12 @@ def test_roster_adapts_to_capability_flags(tmp_path):
 
 def test_set_subagents_toggles_and_warns(tmp_path):
     cfg = make_config(tmp_path, [])
+    assert cfg.subagents is True  # default-on since the roster adds no powers
     wb = Workbench(cfg)
     keys = [row["key"] for row in wb.settings_rows()]
     assert "subagents" in keys
+    # enabling from off warns about token amplification
+    assert wb.dispatch("/set subagents off").changed
     r = wb.dispatch("/set subagents on")
     assert cfg.subagents is True
     assert any("token 花费" in text for cls, text in r.messages

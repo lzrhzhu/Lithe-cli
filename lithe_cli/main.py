@@ -106,10 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sp.add_argument(
             "--subagents",
-            action="store_true",
-            help="grant delegate/delegate_parallel (subagent delegation on "
-            "the default roster: researcher/coder/operator; multiplies "
-            "token spend)",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="grant delegate/delegate_parallel on the default roster "
+            "(researcher/coder/operator). Default: on — the roster only "
+            "reuses already-enabled tools; multiplies token spend "
+            "(--no-subagents disables)",
         )
         sp.add_argument(
             "--document-format",
@@ -490,8 +492,8 @@ def _cmd_doctor() -> int:
         print(ui.kv("mcp", f"{len(cfg.mcp_servers)} 个服务器：{names}"))
     else:
         print(ui.kv("mcp", "未配置（--mcp 或环境变量 LITHE_MCP）"))
-    delegation = "已启用（delegate 可委派子代理，token 花费会放大）" \
-        if cfg.subagents else "未启用（--subagents 显式授权）"
+    delegation = "已启用（delegate 可委派子代理，token 花费会放大；--no-subagents 关闭）" \
+        if cfg.subagents else "未启用（--subagents 开启）"
     print(ui.kv("subagents", delegation))
     print(ui.kv("color", "on" if ui.color else "off"))
     return 0
