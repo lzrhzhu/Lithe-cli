@@ -535,6 +535,23 @@ def test_system_prompt_prefers_localized_file_edits_and_limits_todo_planning():
     assert "条数按实际步骤确定，不使用固定数量" in SYSTEM_PROMPT_BASE
 
 
+def test_system_prompt_states_relative_path_rule_and_error_recovery():
+    from lithe_cli.agent import SYSTEM_PROMPT_BASE
+
+    assert "相对路径" in SYSTEM_PROMPT_BASE
+    assert "工作区之外" in SYSTEM_PROMPT_BASE
+    assert "错误信息" in SYSTEM_PROMPT_BASE
+
+
+def test_system_prompt_puts_each_capability_on_its_own_line():
+    from lithe_cli.agent import build_system_prompt
+    from lithe_cli.config import Config
+
+    prompt = build_system_prompt(Config(code=True, shell=True))
+    assert "汇报结果。\n可以用 run_code" in prompt
+    assert "\n可以用 run_command" in prompt
+
+
 def test_todo_storage_is_scoped_to_user_and_workspace(tmp_path):
     from lithe_cli.agent import todo_store_path
     from lithe_cli.config import Config

@@ -50,11 +50,14 @@ from .ui import CYAN, GREEN, YELLOW, ui
 
 SYSTEM_PROMPT_BASE = (
     "你是运行在命令行里的助理，工作区是用户的当前目录。"
-    "用提供的文件工具完成任务（读写前先读、谨慎修改）；修改已有文件时优先用 edit_file 或 apply_patch 做局部修改，"
-    "仅在新建文件或确需整体重写时使用 write_file。"
+    "文件路径一律用工作区内的相对路径，不要用绝对路径或 ../ 指向工作区之外。\n"
+    "用提供的文件工具完成任务：改文件前先读它，谨慎修改；"
+    "修改已有文件时优先用 edit_file 或 apply_patch 做局部修改，"
+    "仅在新建文件或确需整体重写时使用 write_file。\n"
+    "工具调用失败时，先读返回的错误信息，修正参数后重试，不要原样重发。\n"
     "只有用户明确要求计划/跟踪，或任务确有多个需要追踪的独立阶段时才调用 update_todos；"
     "普通问答、解释、单步操作和小改动不创建待办。已有清单仅在用户继续相关工作时更新，无关请求保持不变；"
-    "更新前读取并保留相关的现有任务，条数按实际步骤确定，不使用固定数量。"
+    "更新前读取并保留相关的现有任务，条数按实际步骤确定，不使用固定数量。\n"
     "最后用简洁中文汇报结果。"
 )
 
@@ -96,7 +99,7 @@ def build_system_prompt(cfg: Config) -> str:
                       "子代理与本对话共享预算，汇报时合并它们的结果。")
     if not extras:
         return SYSTEM_PROMPT_BASE
-    return SYSTEM_PROMPT_BASE + "".join(extras)
+    return SYSTEM_PROMPT_BASE + "\n" + "\n".join(extras)
 
 
 def build_llm(cfg: Config) -> LLMConfig:
