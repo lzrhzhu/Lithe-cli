@@ -506,7 +506,8 @@ class Workbench:
                 return
             rid = runs[-1].run_id
         reverted = await undo(self.cfg, rid, quiet=True)
-        cid = self._cid() or -1
+        run = self.store.get_run(rid, self.cfg.user_id)
+        cid = (run.conversation_id if run is not None else None) or -1
         self._emit(cid, {"type": "undo_done", "run_id": rid,
                          "reverted": reverted})
 

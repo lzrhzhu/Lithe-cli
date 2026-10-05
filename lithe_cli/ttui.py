@@ -24,15 +24,13 @@ Shift+drag still works in terminals that keep native selection.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+
 from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.message import Message
-from textual.screen import ModalScreen
-from textual.widgets import Input, Label, ListItem, ListView, Static
+from textual.containers import Horizontal, VerticalScroll
+from textual.widgets import Input, Static
 
 from .clipboard import deliver_clipboard, write_clipboard_file
 from .config import lithe_home
@@ -45,6 +43,11 @@ from .tui import (
     transcript_feed_lines,
 )
 from .ui import fmt_duration
+from . import ttui_widgets as _widgets
+from .ttui_widgets import (
+    ConfirmModal, ConversationPane, HistoryInput, PickerModal, WbEvent,
+    completion_suggestions, selected_text,
+)
 
 _MAX_FEED = 400  # mounted conversation lines before trimming the oldest
 
@@ -162,278 +165,6 @@ def footer_text(state: TuiState) -> str:
             f" · F5 设置 · F6 推理 · /help ")
 
 
-# -- input: completion + persistent history ------------------------------------
-
-def completion_suggestions(
-    value: str,
-    commands: dict,
-    models: list[str],
-    profiles: list[str],
-    session_ids: list[str],
-) -> list[str]:
-    """Suggest completions for a half-typed input line (pure; tested).
-
-    ``/prefix`` completes command names; ``/model | /profile | /resume``
-    complete their first argument (cached models, saved profiles, session
-    ids). Empty result hides the suggestion strip.
-    """
-    if not value.startswith("/"):
-        return []
-    if " " not in value:
-        prefix = value.rstrip()
-        return [
-            f"/{name} "
-            for name in sorted(commands)
-            if prefix == "/" or f"/{name}".startswith(prefix)
-        ][:6]
-    head, _, arg = value.partition(" ")
-    command = head[1:].lower()
-    words: list[str] = []
-    if command == "model":
-        words = models
-    elif command == "profile":
-        words = profiles
-    elif command == "resume":
-        words = session_ids
-    return [w for w in words if w.startswith(arg) and w != arg][:6]
-
-
-class HistoryInput(Input):
-    """Input with ↑/↓ recall over a persistent FileHistory store."""
-
-    BINDINGS = [
-        Binding("up", "history_prev", "上一条", show=False, priority=True),
-        Binding("down", "history_next", "下一条", show=False, priority=True),
-        Binding("tab", "accept_suggestion", "采纳", show=False,
-                priority=True),
-    ]
-
-    def __init__(self, *args, file_history=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.file_history = file_history
-        self._lines: list[str] = []
-        self._pos: int | None = None
-        self._draft = ""
-        self.suggestion: list[str] = []
-        self.reload_history()
-
-    def reload_history(self) -> None:
-        self._lines = []
-        if self.file_history is not None:
-            try:
-                self._lines = list(self.file_history.load_history_strings())
-            except OSError:
-                self._lines = []
-        self._pos = None
-        self._draft = ""
-
-    def record(self, line: str) -> None:
-        line = line.strip()
-        if not line:
-            return
-        if not self._lines or self._lines[-1] != line:
-            self._lines.append(line)
-            if self.file_history is not None:
-                try:
-                    self.file_history.store_string(line)
-                except OSError:
-                    pass
-        self._pos = None
-        self._draft = ""
-
-    def _apply(self, text: str, pos: int | None) -> None:
-        self._pos = pos
-        self.value = text
-        self.cursor_position = len(text)
-
-    def action_history_prev(self) -> None:
-        if not self._lines:
-            return
-        if self._pos is None:
-            self._draft = self.value
-            self._apply(self._lines[-1], len(self._lines) - 1)
-        elif self._pos > 0:
-            self._apply(self._lines[self._pos - 1], self._pos - 1)
-
-    def action_history_next(self) -> None:
-        if self._pos is None:
-            return
-        if self._pos < len(self._lines) - 1:
-            self._apply(self._lines[self._pos + 1], self._pos + 1)
-        else:
-            self._apply(self._draft, None)
-
-    def action_accept_suggestion(self) -> None:
-        if self.suggestion:
-            accepted = self.suggestion[0]
-            self.value = accepted
-            self.cursor_position = len(accepted)
-            self.suggestion = []
-
-
-# -- workbench → app message ----------------------------------------------------
-
-class WbEvent(Message):
-    """One Workbench event, marshalled into the UI message pump."""
-
-    def __init__(self, cid: int, ev: dict) -> None:
-        super().__init__()
-        self.cid = cid
-        self.ev = ev
-
-
-# -- clipboard hooks -------------------------------------------------------------
-
-def selected_text(screen: Any, app: Any = None) -> str:
-    """The current Textual text selection, if this release has one.
-
-    The selection API moved names between Textual releases (and is absent
-    in the headless test driver), so every candidate is probed and a miss
-    simply means "no selection" — callers keep their old behaviour.
-    """
-    for holder in (screen, app):
-        if holder is None:
-            continue
-        getter = getattr(holder, "get_selected_text", None)
-        if not callable(getter):
-            continue
-        try:
-            text = getter()
-        except Exception:  # noqa: BLE001 — no selection model: not fatal
-            continue
-        if isinstance(text, str) and text.strip():
-            return text
-    return ""
-
-
-class ConversationPane(VerticalScroll):
-    """The conversation pane.
-
-    Right-click is handled here rather than on the app: mouse reporting is
-    on, so the terminal's own context menu never opens inside the screen,
-    and the pane is where a reader aims when they want text out of it.
-    """
-
-    def on_mouse_down(self, event) -> None:
-        if getattr(event, "button", 0) != 3:
-            return
-        stop = getattr(event, "stop", None)
-        if callable(stop):  # keep the app's own handler from firing twice
-            stop()
-        self.app.open_copy_menu()
-
-
-# -- pickers ---------------------------------------------------------------------
-
-class PickerModal(ModalScreen):
-    """Generic list picker: Enter selects, letters run extra actions,
-    Esc/q closes. ``items`` are (payload, markup label) tuples."""
-
-    BINDINGS = [
-        Binding("escape", "dismiss_none", "关闭"),
-        Binding("q", "dismiss_none", "关闭", show=False),
-        Binding("n", "letter('n')", show=False),
-        Binding("d", "letter('d')", show=False),
-        Binding("r", "letter('r')", show=False),
-        Binding("s", "letter('s')", show=False),
-        # In-place toggle for the settings picker: flips the focused row
-        # without dismissing, so several knobs change in one visit.
-        Binding("space", "toggle", "切换（不关闭）", priority=True),
-    ]
-
-    def __init__(self, title: str, items: list[tuple[dict, str]],
-                 hint: str = "", letter_actions: dict[str, str] | None = None,
-                 live_toggle: Callable[[dict], str | None] | None = None):
-        super().__init__()
-        self.title = title
-        self.items = items
-        self.hint = hint
-        self.letter_actions = letter_actions or {}
-        self.live_toggle = live_toggle
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="picker"):
-            yield Static(self.title, id="picker-title")
-            yield ListView(
-                *[ListItem(Label(label)) for _payload, label in self.items],
-                id="picker-list",
-            )
-            if self.hint:
-                yield Static(self.hint, id="picker-hint")
-
-    def on_mount(self) -> None:
-        self.query_one("#picker-list", ListView).focus()
-
-    def _current_payload(self) -> dict | None:
-        view = self.query_one("#picker-list", ListView)
-        index = view.index if view.index is not None else 0
-        if 0 <= index < len(self.items):
-            return self.items[index][0]
-        return None
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        view = self.query_one("#picker-list", ListView)
-        index = view.children.index(event.item) if event.item in view.children \
-            else None
-        payload = self.items[index][0] if index is not None else None
-        self.dismiss(("select", payload))
-
-    def action_dismiss_none(self) -> None:
-        self.dismiss(None)
-
-    def action_letter(self, key: str) -> None:
-        name = self.letter_actions.get(key)
-        payload = self._current_payload()
-        self.dismiss(("letter", name, payload) if name else None)
-
-    def action_toggle(self) -> None:
-        """Flip the focused row in place: the ``live_toggle`` callback
-        applies the change and returns a rebuilt label (``None`` when the
-        row is not toggleable); the modal stays open."""
-        if self.live_toggle is None:
-            return
-        view = self.query_one("#picker-list", ListView)
-        index = view.index if view.index is not None else 0
-        if not 0 <= index < len(self.items):
-            return
-        payload = self.items[index][0]
-        label = self.live_toggle(payload)
-        if label is None:
-            return
-        self.items[index] = (payload, label)
-        row = view.children[index]
-        if row.children:
-            row.children[0].update(label)
-
-
-# -- command approval --------------------------------------------------------
-
-class ConfirmModal(ModalScreen):
-    """y/n on a destructive run_command: y allows, n/Esc refuses."""
-
-    BINDINGS = [
-        Binding("y", "allow", "允许"),
-        Binding("n", "refuse", "拒绝"),
-        Binding("escape", "refuse", "拒绝", show=False),
-    ]
-
-    def __init__(self, command: str):
-        super().__init__()
-        self.command = command
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="picker"):
-            yield Static("⚠ 破坏性命令需确认", id="picker-title")
-            yield Static(self.command, id="picker-hint")
-            yield Static("y 允许执行 · n/Esc 拒绝", id="picker-hint")
-
-    def action_allow(self) -> None:
-        self.dismiss(True)
-
-    def action_refuse(self) -> None:
-        self.dismiss(False)
-
-
 # -- the app ----------------------------------------------------------------------
 
 class LitheApp(App):
@@ -449,6 +180,7 @@ class LitheApp(App):
     #picker-title { color: #38bdf8; text-style: bold; }
     #picker-list { height: auto; max-height: 16; }
     #picker-hint { color: #94a3b8; }
+    #picker-command { color: #f87171; }
     .user { color: #60a5fa; }
     .assistant { color: #4ade80; }
     .tool { color: #22d3ee; }
@@ -494,10 +226,7 @@ class LitheApp(App):
         yield Static("", id="foot", markup=False)
 
     def on_mount(self) -> None:
-        from lithe.bundles import JsonTodoStore
-
         from . import __version__
-        from .agent import todo_store_path
         from .prompts import open_history
         from .workbench import Workbench
 
@@ -505,7 +234,6 @@ class LitheApp(App):
         # Destructive run_command approval rides a modal; the turn task and
         # the app share one loop, so the middleware can await the human.
         self.wb.approver = self.confirm_command
-        self.todo_store = JsonTodoStore(todo_store_path(self.cfg))
         self.version = __version__
         prompt = self.query_one("#prompt", HistoryInput)
         if self.mode == "chat":
@@ -549,6 +277,10 @@ class LitheApp(App):
             and self.wb.current else None
 
     def _base_state(self, cid: int | None) -> TuiState:
+        from lithe.bundles import JsonTodoStore
+
+        from .agent import todo_store_path
+
         title = ""
         if cid is not None:
             title = (self.wb.sessions.get(cid) or {}).get("title", "")
@@ -556,7 +288,7 @@ class LitheApp(App):
             self.cfg.model or "(scripted)",
             str(self.cfg.workspace_dir.resolve()),
             self.cfg.max_steps,
-            self.todo_store.list(),
+            JsonTodoStore(todo_store_path(self.cfg, cid)).list(),
             profile=self.cfg.profile or "",
             session_id=cid,
             session_title=title,
@@ -581,6 +313,10 @@ class LitheApp(App):
         st.set_sessions(self.wb.session_list(), self.wb.busy_ids())
 
     def _activate(self, cid: int) -> None:
+        from lithe.bundles import JsonTodoStore
+
+        from .agent import todo_store_path
+
         if cid not in self.states:
             st = self._base_state(cid)
             st.feed.extend(
@@ -594,6 +330,11 @@ class LitheApp(App):
                 st.tokens = usage["total_tokens"]
             st.cost = usage["cost"]
             self.states[cid] = st
+        # Reload from the conversation's persisted store when returning to it:
+        # a background turn or /undo may have changed its todos meanwhile.
+        self.states[cid].todos = JsonTodoStore(
+            todo_store_path(self.cfg, cid)
+        ).list()
         self.state = self.states[cid]
         self._shown = 0
         conv = self.query_one("#conv", ConversationPane)
@@ -680,9 +421,18 @@ class LitheApp(App):
             self._refresh_chrome()
             return
         if t == "undo_done":
-            self.state.say("ok", f"已撤销 {ev.get('reverted', 0)} 个操作"
-                                 f"（run {ev.get('run_id')}）")
-            self._sync_feed()
+            from lithe.bundles import JsonTodoStore
+
+            from .agent import todo_store_path
+
+            if cid in self.states:
+                self.states[cid].todos = JsonTodoStore(
+                    todo_store_path(self.cfg, cid)
+                ).list()
+            if cid == self._current_cid():
+                self.state.say("ok", f"已撤销 {ev.get('reverted', 0)} 个操作"
+                                     f"（run {ev.get('run_id')}）")
+                self._sync_feed()
             return
         if cid in (-1, self._current_cid()):
             self.state.on_event(ev)
@@ -1179,3 +929,11 @@ def run_textual_screen(cfg, task: str | None, mode: str,
     """The full-screen driver for `lithe chat` (mode='chat') and `lithe run`."""
     app = LitheApp(cfg, task, mode, args)
     return asyncio.run(_driver(app))
+
+
+def __getattr__(name: str):
+    """Forward extracted widget names for existing ``lithe_cli.ttui`` users."""
+    try:
+        return getattr(_widgets, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None

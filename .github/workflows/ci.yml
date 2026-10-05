@@ -22,3 +22,9 @@ jobs:
         run: ruff check .
       - name: Test
         run: python -m pytest -q
+      - name: Build and validate release artifacts
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          python scripts/check_release.py --distribution lithe-cli --package lithe_cli --clean-only
+          python -m pip install build twine
+          python scripts/check_release.py --distribution lithe-cli --package lithe_cli

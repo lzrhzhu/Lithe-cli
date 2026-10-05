@@ -75,10 +75,14 @@ SYSTEM_PROMPT_BASE = (
 )
 
 
-def todo_store_path(cfg: Config) -> Path:
+def todo_store_path(cfg: Config, conversation_id: int | None = None) -> Path:
+    """Path for one conversation's task list (None is the non-session scope)."""
     workspace = str(cfg.workspace_dir.expanduser().resolve())
+    scope_data = {"user_id": str(cfg.user_id), "workspace": workspace}
+    if conversation_id is not None:
+        scope_data["conversation_id"] = conversation_id
     scope = json.dumps(
-        {"user_id": str(cfg.user_id), "workspace": workspace},
+        scope_data,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -159,7 +163,11 @@ def build_llm(cfg: Config) -> LLMConfig:
     return LLMConfig(**overrides)
 
 
-def build_registry(cfg: Config, approver: Callable[[str], Awaitable[bool]] | None = None) -> ToolRegistry:
+def build_registry(
+    cfg: Config,
+    approver: Callable[[str], Awaitable[bool]] | None = None,
+    conversation_id: int | None = None,
+) -> ToolRegistry:
     """Register the CLI's tool set against the configured workspace.
 
     ``approver`` is the human-confirmation channel for destructive
@@ -173,7 +181,7 @@ def build_registry(cfg: Config, approver: Callable[[str], Awaitable[bool]] | Non
 
     register_file_tools(reg, workspace_for)
     register_apply_patch_tool(reg, workspace_for)
-    todo_store = JsonTodoStore(todo_store_path(cfg))
+    todo_store = JsonTodoStore(todo_store_path(cfg, conversation_id))
     register_todo_tools(reg, lambda ctx: todo_store)
     if cfg.download:
         register_download_tools(reg, workspace_for)
@@ -517,7 +525,7 @@ async def execute(
     the steering channel: a queue of user texts the kernel drains at step
     boundaries and injects as user messages (see AgentRuntime.run).
     """
-    reg = build_registry(cfg, approver)
+    reg = build_registry(cfg, approver, conversation_id=conversation_id)
     host = build_host(cfg, reg)
     if cfg.subagents:
         register_subagents(cfg, host, reg, on_event=on_event)
@@ -560,7 +568,9 @@ async def execute(
 
 async def undo(cfg: Config, run_id: str, quiet: bool = False) -> int:
     """Revert a run's mutations; returns how many actions were reverted."""
-    reg = build_registry(cfg)
+    run = JsonlRunStore(cfg.store_dir).get_run(run_id, cfg.user_id)
+    conversation_id = run.conversation_id if run is not None else None
+    reg = build_registry(cfg, conversation_id=conversation_id)
     host = build_host(cfg, reg)
     report = await undo_run(host, run_id, cfg.user_id)
     if not quiet:

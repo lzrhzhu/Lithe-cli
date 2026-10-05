@@ -15,6 +15,7 @@ from textual.containers import VerticalScroll  # noqa: E402
 from lithe_cli import clipboard as clipboard_mod  # noqa: E402
 
 from lithe_cli.ttui import (  # noqa: E402
+    ConfirmModal,
     LitheApp,
     PickerModal,
     footer_text,
@@ -179,6 +180,61 @@ def test_session_picker_switches_sessions(tmp_path):
             assert app.wb.current["id"] == first
             # conversation pane rebuilt for the switched session
             assert app.state.session_id == first
+
+    asyncio.run(scenario())
+
+
+def test_todos_are_loaded_per_conversation_on_new_and_switch(tmp_path):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            from lithe.bundles import JsonTodoStore
+            from lithe_cli.agent import todo_store_path
+
+            first = app.wb.current["id"]
+            JsonTodoStore(todo_store_path(app.cfg, first)).replace([
+                {"content": "第一会话任务", "status": "pending"},
+            ])
+
+            second_conv = app.wb.new_session()
+            app._activate(second_conv["id"])
+            assert app.state.todos == []
+
+            JsonTodoStore(todo_store_path(app.cfg, second_conv["id"])).replace([
+                {"content": "第二会话任务", "status": "pending"},
+            ])
+            app.wb.current = app.wb.sessions.get(first)
+            app._activate(first)
+            assert [todo["content"] for todo in app.state.todos] == ["第一会话任务"]
+
+    asyncio.run(scenario())
+
+
+def test_confirm_modal_mounts_and_answers(tmp_path):
+    """回归：ConfirmModal 的 compose 必须可挂载（同父级 id 唯一）并能
+    y/n 应答——早前两行同用 id="picker-hint"，破坏性命令审批一弹出
+    就 MountError 崩溃。"""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            got: list[bool] = []
+            app.push_screen(ConfirmModal("rm -rf build"), got.append)
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            assert app.screen.query_one("#picker-command")
+            await pilot.press("y")
+            await pilot.pause()
+            assert got == [True]
+
+            got.clear()
+            app.push_screen(ConfirmModal("del /s build"), got.append)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert got == [False]
 
     asyncio.run(scenario())
 

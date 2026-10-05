@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.4 (2026-10-05)
+
+The stability round: a crash in the destructive-command approval dialog,
+task lists that leaked across conversations, and a missing release gate
+in CI/publish — plus the widget-module extraction those fixes rode in on.
+
+- **`ConfirmModal` duplicate-id crash fixed** — the destructive
+  `run_command` approval dialog rendered two `Static` widgets with the
+  same id (`picker-hint`), so opening it raised `MountError: Tried to
+  insert 2 widgets with the same ID` and killed the app. The command line
+  now has its own `picker-command` id (highlighted red); a regression
+  test mounts the modal and answers y/esc.
+- **todos are scoped per conversation** — the task list store keyed only
+  on user+workspace, so every session in one workspace shared a single
+  list and new conversations inherited stale todos. `todo_store_path`
+  now folds in the conversation id; the workbench passes it through on
+  every turn, the TUI reloads the right list on new/switch, and `undo`
+  resolves the owning run's conversation before undoing todo changes.
+- **Textual widgets extracted to `lithe_cli.ttui_widgets`** —
+  `HistoryInput`, `WbEvent`, `selected_text`, `ConversationPane`,
+  `PickerModal`, `ConfirmModal` and `completion_suggestions` move out of
+  `ttui.py` (which keeps re-exporting them; module `__getattr__` forwards
+  any straggler attribute), shrinking the front-end module by a third.
+- **release gate** — `scripts/check_release.py` builds isolated wheel +
+  sdist, verifies PEP 625 artifact names and Name/Version metadata
+  against the source `__version__` (line-ending agnostic — setuptools
+  writes CRLF METADATA on Windows), runs `twine check --strict`, and can
+  clean stale `build/` / `dist/` / `.egg-info` (`--clean-only`); CI and
+  the publish workflow run it before upload.
+
 ## 0.1.3 (2026-10-05)
 
 The copy round: mouse reporting means the terminal's own drag-select,

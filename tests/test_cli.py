@@ -567,6 +567,64 @@ def test_todo_storage_is_scoped_to_user_and_workspace(tmp_path):
     assert first_path.suffix == ".json"
     assert first_path != todo_store_path(second)
     assert first_path != todo_store_path(third)
+    assert first_path != todo_store_path(first, conversation_id=1)
+    assert todo_store_path(first, conversation_id=1) != todo_store_path(
+        first, conversation_id=2
+    )
+
+
+def test_todo_tools_are_scoped_to_conversation(tmp_path):
+    from lithe import AgentContext
+    from lithe.bundles import JsonTodoStore
+    from lithe_cli.agent import build_registry, todo_store_path
+
+    cfg = make_config(tmp_path, [])
+
+    async def update(conversation_id, content):
+        registry = build_registry(cfg, conversation_id=conversation_id)
+        return await registry.dispatch(
+            "update_todos",
+            {"todos": [{"content": content, "status": "pending"}]},
+            AgentContext(
+                run_id=f"run-{conversation_id}",
+                user_id=cfg.user_id,
+                extra={"conversation_id": conversation_id},
+            ),
+        )
+
+    result_a = asyncio.run(update(101, "对话 A 的任务"))
+    result_b = asyncio.run(update(202, "对话 B 的任务"))
+    assert result_a.ok and result_b.ok
+    assert JsonTodoStore(todo_store_path(cfg, 101)).list()[0]["content"] == "对话 A 的任务"
+    assert JsonTodoStore(todo_store_path(cfg, 202)).list()[0]["content"] == "对话 B 的任务"
+
+
+def test_undo_todo_change_uses_owning_conversation_store(tmp_path):
+    from lithe.bundles import JsonTodoStore
+    from lithe_cli.agent import todo_store_path
+
+    responses = [
+        {"tool_calls": [_tc("update_todos", {
+            "todos": [{"content": "会话 A 任务", "status": "pending"}],
+        }, "a1")]},
+        {"content": "A 已记录"},
+        {"tool_calls": [_tc("update_todos", {
+            "todos": [{"content": "会话 B 任务", "status": "pending"}],
+        }, "b1")]},
+        {"content": "B 已记录"},
+    ]
+    cfg = make_config(tmp_path, responses)
+    rid_a, done_a, _ = asyncio.run(
+        execute(cfg, "记录 A 任务", conversation_id=11)
+    )
+    rid_b, done_b, _ = asyncio.run(
+        execute(cfg, "记录 B 任务", conversation_id=22)
+    )
+    assert done_a["status"] == done_b["status"] == "done"
+
+    assert asyncio.run(undo(cfg, rid_a)) == 1
+    assert JsonTodoStore(todo_store_path(cfg, 11)).list() == []
+    assert JsonTodoStore(todo_store_path(cfg, 22)).list()[0]["content"] == "会话 B 任务"
 
 
 def test_persisted_todos_are_not_injected_into_unrelated_prompts(tmp_path):
