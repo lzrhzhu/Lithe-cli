@@ -12,6 +12,8 @@ textual = pytest.importorskip("textual")
 
 from textual.containers import VerticalScroll  # noqa: E402
 
+from lithe_cli import clipboard as clipboard_mod  # noqa: E402
+
 from lithe_cli.ttui import (  # noqa: E402
     LitheApp,
     PickerModal,
@@ -25,6 +27,34 @@ WRITE_THEN_ANSWER = [
     {"tool_calls": [_tc("write_file", {"path": "a.txt", "content": "hi"}, "c1")]},
     {"content": "已写入 a.txt。"},
 ]
+
+
+# -- copy: hermetic clipboard ------------------------------------------------
+
+@pytest.fixture
+def copied(monkeypatch):
+    """Capture what the app sends to the clipboard, whichever channel."""
+    sink: list[str] = []
+
+    async def fake_osc52(app, text):
+        sink.append(text)
+        return True
+
+    monkeypatch.setattr(clipboard_mod, "native_clipboard_command", lambda: None)
+    monkeypatch.setattr(clipboard_mod, "_osc52", fake_osc52)
+    return sink
+
+
+class _RightClick:
+    """Stand-in for Textual's MouseDown with button=3 (no driver needed)."""
+
+    button = 3
+
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
 
 
 def _app(tmp_path, responses, mode="chat"):
@@ -347,7 +377,10 @@ def test_completion_suggestions_commands_and_args():
 
     got = completion_suggestions("/mo", COMMANDS, [], [], [])
     assert got[:2] == ["/model ", "/models "]
-    assert completion_suggestions("/", COMMANDS, [], [], [])[:1] == ["/exit "]
+    # "/" lists commands alphabetically, so /copy now leads the list
+    assert completion_suggestions("/", COMMANDS, [], [], [])[:2] == \
+        ["/copy ", "/exit "]
+    assert completion_suggestions("/co", COMMANDS, [], [], []) == ["/copy "]
     assert completion_suggestions("普通输入", COMMANDS, [], [], []) == []
     assert completion_suggestions(
         "/model glm-4.5", COMMANDS, ["glm-4.6", "glm-4.5-air"], [], []
@@ -511,5 +544,168 @@ def test_command_output_refreshes_model_candidates(tmp_path):
             assert app.state.model == "fresh-model"
             assert app.state.model_candidates[0] == "fresh-model"
             assert "端点返回" in _conv_text(app)
+
+    asyncio.run(scenario())
+
+
+# --- copy: right-click, /copy, Ctrl+C over a selection, verbatim text --------
+
+
+def test_right_click_on_the_conversation_opens_the_copy_menu(
+        tmp_path, copied):
+    """Mouse reporting swallows the terminal's own context menu, so the
+    pane must answer button=3 itself (and stop the event, or the app
+    handler would open a second menu)."""
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.state.say("assistant", "答案第一行")
+            app._sync_feed()
+            await pilot.pause()
+
+            event = _RightClick()
+            app.query_one("#conv").on_mouse_down(event)
+            await pilot.pause()
+            assert event.stopped, "pane handler must consume the click"
+            assert isinstance(app.screen, PickerModal)
+            payloads = [payload for payload, _ in app.screen.items]
+            assert [p.get("scope") for p in payloads if "scope" in p] == \
+                ["last", "all", "user", "tools"]
+            assert not any("selection" in p for p in payloads)
+
+            app.screen.query_one("#picker-list").index = 1  # 复制整段对话
+            await pilot.press("enter")
+            await pilot.pause()
+            assert copied and "答案第一行" in copied[-1]
+            assert "已复制整段对话" in _conv_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_right_click_offers_the_selection_when_there_is_one(
+        tmp_path, copied, monkeypatch):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr("lithe_cli.ttui.selected_text",
+                                lambda *a: "拖选出来的两行")
+            app.state.say("assistant", "答案")
+            app._sync_feed()
+            app.open_copy_menu()
+            await pilot.pause()
+            payloads = [payload for payload, _ in app.screen.items]
+            assert payloads[0] == {"selection": True}
+            await pilot.press("enter")
+            await pilot.pause()
+            assert copied[-1] == "拖选出来的两行"
+            assert "已复制选中文本" in _conv_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_copy_command_copies_the_last_answer(tmp_path, copied):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.state.say("user", "把 a.txt 改一下")
+            app.state.say("assistant", "已经改好了。")
+            app.state.say("assistant", "还要提交吗？")
+            app._sync_feed()
+            await pilot.pause()
+
+            prompt = app.query_one("#prompt")
+            prompt.value = "/copy"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert copied[-1] == "已经改好了。\n还要提交吗？"
+
+            prompt.value = "/copy user"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert copied[-1] == "把 a.txt 改一下"
+
+    asyncio.run(scenario())
+
+
+def test_copy_command_rejects_an_unknown_scope(tmp_path, copied):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "/copy 乱七八糟"
+            await pilot.press("enter")
+            await pilot.pause()
+            text = _conv_text(app)
+            assert "用法" in text and "/copy" in text
+            assert copied == [], "a bad scope must not copy anything"
+
+    asyncio.run(scenario())
+
+
+def test_copy_on_an_empty_conversation_says_so(tmp_path, copied):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "/copy all"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "没有可复制" in _conv_text(app)
+            assert copied == []
+
+    asyncio.run(scenario())
+
+
+def test_ctrl_c_copies_a_selection_instead_of_cancelling(
+        tmp_path, copied, monkeypatch):
+    """The native Ctrl+C reflex over a drag selection must not kill the
+    turn; with nothing selected Ctrl+C still cancels."""
+    monkeypatch.setattr("lithe_cli.ttui.selected_text",
+                        lambda *a: "选中了这一段")
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            assert copied == ["选中了这一段"]
+            assert app.is_running, "Ctrl+C over a selection must not exit"
+            assert "已复制选中文本" in _conv_text(app)
+
+            # No selection: the documented exit path is untouched.
+            monkeypatch.setattr("lithe_cli.ttui.selected_text", lambda *a: "")
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+
+
+def test_feed_text_is_renderable_verbatim_not_as_markup(tmp_path, copied):
+    """Model output is data: a "[dim]" in an answer must reach both the
+    screen and the clipboard exactly as written (markup parsing would
+    swallow it, and every caller reads widget content back for /copy)."""
+    answer = "用 [dim] 标灰，用 [/] 收尾"
+
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.state.say("assistant", answer)
+            app._sync_feed()
+            await pilot.pause()
+            rendered = [str(s.content) for s in app.query("#conv Static")]
+            assert answer in rendered
+            prompt = app.query_one("#prompt")
+            prompt.value = "/copy"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert copied[-1] == answer
+
+    asyncio.run(scenario())
 
     asyncio.run(scenario())

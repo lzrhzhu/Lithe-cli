@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.3 (2026-10-05)
+
+The copy round: mouse reporting means the terminal's own drag-select,
+context menu and Ctrl+C never reach a full-screen app, so getting text
+out of `lithe chat` meant quitting (or Shift+drag) first. The app now
+brings its own copy paths, and the feed renders as data, not markup.
+
+- **markup-safe feed** — conversation lines, the banner, the footer and
+  the streaming line all render with `markup=False`: an answer or tool
+  output containing `[x]`-style brackets renders verbatim instead of
+  raising `MarkupError` inside layout (and `/copy` sends the clipboard
+  exactly what was displayed).
+- **in-app selection + right-click copy menu** — the conversation pane
+  handles right-click (mouse reporting keeps the terminal's own menu
+  unreachable in here) and offers the Textual text selection plus the
+  scope copies; right-click elsewhere in the app opens the same menu.
+- **`/copy [last|all|user|tools]`** — one command lifts the requested
+  slice off the feed (streaming included); the plain REPL rebuilds the
+  same rows from the session transcript so both front-ends copy
+  identical text.
+- **Ctrl+C over a selection copies it** — a native Ctrl+C reflex over a
+  drag selection copies instead of cancelling the turn; press again with
+  nothing selected for the documented cancel/exit behaviour.
+- **layered clipboard delivery** — platform clipboard command → OSC 52
+  escape (works over SSH) → file under `$LITHE_HOME`, with the winning
+  channel reported in the feed.
+- **`lithe sessions --export ID|标题`** — prints a conversation as
+  plain text on stdout for piping (`lithe sessions --export 12 | pbcopy`).
+
 ## 0.1.2 (2026-10-05)
 
 The subagent-visibility round: a delegation used to be a black box —

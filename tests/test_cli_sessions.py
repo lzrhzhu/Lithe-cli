@@ -40,6 +40,52 @@ def test_resume_accepts_hash_prefixed_id(tmp_path):
     assert wb.sessions.resolve(str(ids[2]))["id"] == ids[2]
 
 
+def test_sessions_export_prints_plain_text_for_piping(tmp_path, capsys):
+    """`lithe sessions --export 12 | pbcopy` is the non-TTY copy path: the
+    text must land on stdout with no tables, markup or color codes."""
+    from lithe_cli.main import main
+
+    wb, ids = _make_sessions(tmp_path, n=1)
+    store_args = ["--store", str(wb.cfg.store_dir), "--user", wb.cfg.user_id]
+
+    assert main(["sessions", *store_args, "--export", str(ids[0])]) == 0
+    out = capsys.readouterr().out
+    assert "任务 0" in out and "已写入 a.txt。" in out
+    # Plain text for a pipe: no ANSI, and the conversation's own rows
+    # (tool-call markers included) verbatim — not the sidebar's markup.
+    assert "\x1b[" not in out
+    assert "◆ write_file" in out and "F3" not in out
+
+    assert main(["sessions", *store_args, "--export", "999"]) == 1
+    assert "找不到" in capsys.readouterr().out
+
+
+def test_plain_repl_copy_command_reaches_the_clipboard(
+        tmp_path, monkeypatch, capsys):
+    """The plain REPL has no feed, so /copy rebuilds the rows from the
+    store transcript and sends them through the same channels. There is
+    no app to ask for OSC 52 here, so the platform tool (or the file
+    fallback) is what delivers it."""
+    from lithe_cli import main as main_mod
+    from lithe_cli import prompts
+    from lithe_cli import clipboard as clipboard_mod
+
+    wb, ids = _make_sessions(tmp_path, n=1)
+    copied: list[str] = []
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(clipboard_mod, "native_clipboard_command",
+                        lambda: ["pbcopy"])
+    monkeypatch.setattr(clipboard_mod, "pipe_to_clipboard",
+                        lambda text, argv: copied.append(text) or True)
+    lines = iter(["/copy", "/exit"])
+    monkeypatch.setattr(prompts, "chat_line", lambda *a, **k: next(lines))
+
+    assert main_mod._chat_loop(wb.cfg, resume=str(ids[0])) == 0
+    assert copied and copied[0] == "已写入 a.txt。"
+    out = capsys.readouterr().out
+    assert "已复制最后一条回答" in out and "pbcopy" in out
+
+
 def test_sessions_subcommand_lists_renames_deletes(tmp_path, capsys):
     from lithe_cli.main import main
 

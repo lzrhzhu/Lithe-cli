@@ -224,6 +224,11 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_p.add_argument("--limit", type=int, default=30)
     sessions_p.add_argument("--rename", nargs=2, metavar=("ID", "TITLE"))
     sessions_p.add_argument("--delete", metavar="ID")
+    sessions_p.add_argument(
+        "--export", metavar="ID|标题",
+        help="print a conversation as plain text (pipe it: lithe sessions "
+             "--export 12 | pbcopy)",
+    )
 
     models_p = sub.add_parser(
         "models", help="list the endpoint's models (GET /models)"
@@ -344,6 +349,23 @@ def _cmd_sessions(cfg: Any, args: Any) -> int:
     from .sessions import SessionManager, format_session_rows
 
     mgr = SessionManager(JsonlRunStore(cfg.store_dir), cfg.user_id)
+    if args.export:
+        # Plain text on stdout, so a copy-and-paste workflow works outside
+        # the full-screen UI too: `lithe sessions --export 12 | pbcopy`.
+        from .tui import feed_text, transcript_feed_lines
+
+        row, err = mgr.resolve_exact(args.export)
+        if row is None:
+            print(ui.s(err, RED))
+            return 1
+        text = feed_text(
+            transcript_feed_lines(mgr.history(row["id"])), "all"
+        )
+        if not text.strip():
+            print(ui.s(f"会话 #{row['id']} 没有可导出的文本", YELLOW))
+            return 1
+        print(text)
+        return 0
     if args.rename:
         ident, new_title = args.rename
         row, err = mgr.resolve_exact(ident)
@@ -608,6 +630,31 @@ def _print_result_messages(messages) -> None:
         print(ui.s(text, style) if style else text)
 
 
+def _copy_plain(wb: Any, scope: str) -> None:
+    """``/copy`` outside the full-screen UI: the store holds the text.
+
+    The TUI copies from its live feed; the plain REPL rebuilds the same
+    rows from the session transcript, so both frontends send identical
+    text through the same layered :mod:`lithe_cli.clipboard` channels.
+    """
+    from .clipboard import deliver_clipboard
+    from .tui import COPY_SCOPE_LABELS, describe_copy, feed_text, \
+        transcript_feed_lines
+
+    label = COPY_SCOPE_LABELS.get(scope, scope)
+    cid = wb.current["id"] if wb.current else None
+    rows = wb.sessions.transcript(cid) if cid is not None else []
+    text = feed_text(transcript_feed_lines(rows), scope)
+    if not text.strip():
+        print(ui.s(f"没有可复制的{label}（对话还是空的）", YELLOW))
+        return
+    ok, channel = asyncio.run(deliver_clipboard(text))
+    if ok:
+        print(ui.s(f"✓ 已复制{label}（{describe_copy(text)} → {channel}）", GREEN))
+    else:
+        print(ui.s(f"复制{label}失败：{channel}", RED))
+
+
 def _chat_loop(
     cfg: Any,
     resume: str | None = None,
@@ -673,6 +720,8 @@ def _chat_loop(
         _print_result_messages(r.messages)
         if r.toggle_sidebar:
             print(ui.s("（纯文本模式没有侧栏；交互终端里按 F2）", YELLOW))
+        if r.copy_scope:
+            _copy_plain(wb, r.copy_scope)
         if r.action == "exit":
             break
         if r.awaitable is not None:

@@ -12,9 +12,13 @@ Input niceties: ``/``-commands complete inline (suggestions above the
 prompt, Tab accepts the first), and ↑/↓ recall the persistent chat history
 (shared with the plain REPL through prompt_toolkit's FileHistory store).
 
-No in-app mouse-drag selection / OSC 52 copy — use the terminal's native
-Shift+drag selection instead (hide the sidebar with F2 first if it gets
-in the way).
+Copying: mouse reporting means the terminal's own drag-select and menu
+never reach it, so the app brings its own — right-click opens a copy menu,
+``/copy`` takes the whole conversation (or the last answer, the user's
+lines, the tool output), and ``Ctrl+C`` copies a Textual text selection
+when there is one before it falls back to cancel/exit. Delivery is
+layered (platform tool → OSC 52 → file) in :mod:`lithe_cli.clipboard`;
+Shift+drag still works in terminals that keep native selection.
 """
 
 from __future__ import annotations
@@ -30,7 +34,16 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
-from .tui import TuiState, transcript_feed_lines
+from .clipboard import deliver_clipboard, write_clipboard_file
+from .config import lithe_home
+from .tui import (
+    COPY_SCOPE_LABELS,
+    COPY_SCOPES,
+    TuiState,
+    describe_copy,
+    feed_text,
+    transcript_feed_lines,
+)
 from .ui import fmt_duration
 
 _MAX_FEED = 400  # mounted conversation lines before trimming the oldest
@@ -269,6 +282,47 @@ class WbEvent(Message):
         self.ev = ev
 
 
+# -- clipboard hooks -------------------------------------------------------------
+
+def selected_text(screen: Any, app: Any = None) -> str:
+    """The current Textual text selection, if this release has one.
+
+    The selection API moved names between Textual releases (and is absent
+    in the headless test driver), so every candidate is probed and a miss
+    simply means "no selection" — callers keep their old behaviour.
+    """
+    for holder in (screen, app):
+        if holder is None:
+            continue
+        getter = getattr(holder, "get_selected_text", None)
+        if not callable(getter):
+            continue
+        try:
+            text = getter()
+        except Exception:  # noqa: BLE001 — no selection model: not fatal
+            continue
+        if isinstance(text, str) and text.strip():
+            return text
+    return ""
+
+
+class ConversationPane(VerticalScroll):
+    """The conversation pane.
+
+    Right-click is handled here rather than on the app: mouse reporting is
+    on, so the terminal's own context menu never opens inside the screen,
+    and the pane is where a reader aims when they want text out of it.
+    """
+
+    def on_mouse_down(self, event) -> None:
+        if getattr(event, "button", 0) != 3:
+            return
+        stop = getattr(event, "stop", None)
+        if callable(stop):  # keep the app's own handler from firing twice
+            stop()
+        self.app.open_copy_menu()
+
+
 # -- pickers ---------------------------------------------------------------------
 
 class PickerModal(ModalScreen):
@@ -423,19 +477,21 @@ class LitheApp(App):
         self.args = args
         self._shown = 0  # feed lines already mounted
         self._cancel_asked = False  # first Ctrl+C cancels, second exits
+        self._pending_selection = ""  # selection captured at right-click time
 
     # -- composition ----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="top")
+        yield Static("", id="top", markup=False)
         with Horizontal(id="body"):
-            with VerticalScroll(id="conv"):
-                yield Static("", id="streaming", classes="assistant")
+            with ConversationPane(id="conv"):
+                yield Static("", id="streaming", classes="assistant",
+                             markup=False)
             with VerticalScroll(id="side-wrap"):
                 yield Static("", id="side", markup=True)
         yield Static("", id="suggest")
         yield HistoryInput(placeholder="输入任务，/help 查看命令", id="prompt")
-        yield Static("", id="foot")
+        yield Static("", id="foot", markup=False)
 
     def on_mount(self) -> None:
         from lithe.bundles import JsonTodoStore
@@ -540,7 +596,7 @@ class LitheApp(App):
             self.states[cid] = st
         self.state = self.states[cid]
         self._shown = 0
-        conv = self.query_one("#conv", VerticalScroll)
+        conv = self.query_one("#conv", ConversationPane)
         for child in list(conv.children):
             if child.id != "streaming":
                 child.remove()
@@ -551,7 +607,7 @@ class LitheApp(App):
     # -- conversation rendering (pure render-from-state) ----------------------
 
     def _sync_feed(self) -> None:
-        conv = self.query_one("#conv", VerticalScroll)
+        conv = self.query_one("#conv", ConversationPane)
         streaming = self.query_one("#streaming", Static)
         # Follow the feed only when the reader is already at (or near) the
         # bottom: scrolling up to re-read earlier output mid-run must stick,
@@ -561,7 +617,10 @@ class LitheApp(App):
         while self._shown < len(feed):
             cls, text = feed[self._shown]
             self._shown += 1
-            conv.mount(Static(text, classes=cls or "dim"),
+            # markup=False: model/tool text is data, not Textual markup —
+            # a "[x]" in an answer must render, not parse (and it is what
+            # /copy sends to the clipboard verbatim).
+            conv.mount(Static(text, classes=cls or "dim", markup=False),
                        before=streaming)
         non_stream = [c for c in conv.children if c.id != "streaming"]
         for stale in non_stream[:max(0, len(non_stream) - _MAX_FEED)]:
@@ -695,6 +754,11 @@ class LitheApp(App):
             from .tui import _CHAT_KEYS
 
             self.state.say("dim", _CHAT_KEYS)
+            self._sync_feed()
+        if r.copy_scope:
+            # /copy: the front-end owns the text (the workbench only
+            # resolved the scope), so the copy happens here.
+            await self._copy_scope(r.copy_scope)
         self._sync_feed()
         if r.toggle_sidebar:
             self.state.show_sidebar = not self.state.show_sidebar
@@ -945,6 +1009,86 @@ class LitheApp(App):
     def _picker_fetch_models(self, payload) -> None:
         asyncio.create_task(self.wb._fetch_and_report())
 
+    # -- copy ----------------------------------------------------------------------
+
+    def _scope_text(self, scope: str) -> str:
+        """The feed slice /copy hands to the clipboard (streaming included)."""
+        return feed_text(self.state.feed, scope, extra=self.state.streaming)
+
+    async def _copy_text(self, text: str, label: str) -> bool:
+        """One copy through the layered channels (see lithe_cli.clipboard)."""
+        ok, channel = await deliver_clipboard(text, app=self, home=lithe_home())
+        if ok:
+            self.state.say("ok", f"已复制{label}"
+                                 f"（{describe_copy(text)} → {channel}）")
+        else:
+            self.state.say("err", f"复制{label}失败：{channel}")
+        self._sync_feed()
+        return ok
+
+    async def _copy_scope(self, scope: str) -> bool:
+        label = COPY_SCOPE_LABELS.get(scope, scope)
+        text = self._scope_text(scope)
+        if not text.strip():
+            self.state.say("warn", f"没有可复制的{label}（对话还是空的）")
+            self._sync_feed()
+            return False
+        return await self._copy_text(text, label)
+
+    async def _copy_file(self) -> bool:
+        """Export the whole conversation under $LITHE_HOME (no clipboard)."""
+        text = self._scope_text("all")
+        path = write_clipboard_file(text, lithe_home())
+        if path is None:
+            self.state.say("err", "导出失败：无法写入 $LITHE_HOME")
+        else:
+            self.state.say("ok", "已导出整段对话"
+                                 f"（{describe_copy(text)}）→ {path}")
+        self._sync_feed()
+        return path is not None
+
+    def open_copy_menu(self) -> None:
+        """The right-click copy menu (also the app-level right-click hook)."""
+        selection = selected_text(self.screen, self)
+        items: list[tuple[dict, str]] = []
+        if selection:
+            items.append(({"selection": True},
+                          f"复制选中文本（{describe_copy(selection)}）"))
+        for scope in COPY_SCOPES:
+            items.append(({"scope": scope}, f"复制{COPY_SCOPE_LABELS[scope]}"))
+        items.append(({"file": True}, "整段对话存为文件（$LITHE_HOME）"))
+        # The modal takes the selection with it, so keep it here for the
+        # callback instead of re-reading it after the dismiss.
+        self._pending_selection = selection
+        self.push_screen(
+            PickerModal("复制", items, "Enter 复制 · Esc 关闭"),
+            self._copy_picked,
+        )
+
+    def _copy_picked(self, result) -> None:
+        if not result or result[0] != "select" or not result[1]:
+            return
+        payload = result[1]
+        if payload.get("selection"):
+            if self._pending_selection:
+                asyncio.create_task(
+                    self._copy_text(self._pending_selection, "选中文本"))
+            return
+        if payload.get("file"):
+            asyncio.create_task(self._copy_file())
+            return
+        asyncio.create_task(self._copy_scope(payload.get("scope") or "last"))
+
+    def on_mouse_down(self, event) -> None:
+        """Right-click outside the conversation pane (header, sidebar,
+        footer) gets the same copy menu — mouse reporting leaves the
+        terminal's own menu unreachable in here."""
+        if getattr(event, "button", 0) != 3:
+            return
+        if isinstance(self.screen, PickerModal):
+            return
+        self.open_copy_menu()
+
     # -- keys -----------------------------------------------------------------------
 
     def action_toggle_sidebar(self) -> None:
@@ -952,6 +1096,14 @@ class LitheApp(App):
         self._refresh_chrome()
 
     def action_cancel_or_exit(self) -> None:
+        text = selected_text(self.screen, self)
+        if text:
+            # A native-Ctrl+C reflex over a drag selection: copy it instead
+            # of cancelling the turn (press again with nothing selected to
+            # cancel/exit). Absent a selection API this is a no-op and the
+            # documented cancel/exit behaviour stands.
+            asyncio.create_task(self._copy_text(text, "选中文本"))
+            return
         if self.state.running:
             if not self.wb.cancel(self._current_cid()):
                 # One-shot run mode drives no workbench turn, so wb.cancel

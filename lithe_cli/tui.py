@@ -10,6 +10,9 @@ remaining front-ends build on:
 - :class:`TuiState` — kernel-event folding (feed, tools, usage
   accounting) the Textual app renders from;
 - :func:`transcript_feed_lines` — stored session messages → feed rows;
+- :func:`parse_copy_scope` / :func:`feed_text` — what ``/copy`` lifts off
+  the feed (right-click and Ctrl+C over a selection go through the same
+  extraction in the Textual front-end);
 - ``_CHAT_KEYS`` — the ``/keys`` help text.
 
 Pure data and formatting only — no terminal ownership of any kind.
@@ -366,7 +369,87 @@ class TuiState:
 
 _CHAT_KEYS = """按键：PgUp/PgDn 或鼠标滚轮 滚动对话，Home/End 跳到顶/底。
 F2 侧栏 · F3 会话选择器 · F4 模型选择器 · F5 设置 · F6 推理强度（Esc 关闭）。
-复制用终端原生选区（Shift+拖拽）；侧栏碍事时按 F2 隐藏。"""
+复制：右键菜单 或 /copy（默认最后一条回答；/copy all|user|tools）→ 系统剪贴板，
+终端工具缺失时自动退到 OSC 52，再不行落到 $LITHE_HOME 的 clipboard-*.txt。
+终端原生选区（Shift+拖拽）仍可用：选中后 Ctrl+C 复制，不再取消本轮；侧栏碍事时按 F2 隐藏。"""
+
+
+# -- /copy: which feed rows land on the clipboard --------------------------------
+
+# The scopes /copy accepts; ``last`` is the answer just given.
+COPY_SCOPES = ("last", "all", "user", "tools")
+
+COPY_SCOPE_HELP = "|".join(COPY_SCOPES)
+
+COPY_SCOPE_LABELS = {
+    "last": "最后一条回答",
+    "all": "整段对话",
+    "user": "我的输入",
+    "tools": "工具输出",
+}
+
+_COPY_SCOPE_ALIASES = {
+    "": "last", "last": "last", "answer": "last", "回答": "last",
+    "all": "all", "全部": "all", "对话": "all",
+    "user": "user", "me": "user", "输入": "user", "我": "user",
+    "tools": "tools", "tool": "tools", "工具": "tools",
+}
+
+
+def parse_copy_scope(arg: str) -> str | None:
+    """Normalise a ``/copy`` argument to one of :data:`COPY_SCOPES`.
+
+    ``None`` means "not a scope" so the caller can report the usage instead
+    of silently copying something unexpected.
+    """
+    return _COPY_SCOPE_ALIASES.get(str(arg or "").strip().lower())
+
+
+def feed_text(feed: list[tuple[str, str]], scope: str = "all",
+              extra: str = "") -> str:
+    """Plain text of the conversation, for the clipboard (pure; tested).
+
+    ``last`` is the newest assistant block — the answer just given —
+    ``user`` the lines the user typed, ``tools`` the tool call/result
+    lines, ``all`` the whole feed. ``extra`` is the text still streaming:
+    it is not in the feed yet, which makes it *the* newest answer for
+    ``last`` and a tail to append for ``all``.
+    """
+    extra = str(extra or "").rstrip("\n")
+    if scope == "last" and extra.strip():
+        return extra.strip("\n")
+    if scope == "user":
+        lines = [text for cls, text in feed if cls == "user"]
+    elif scope == "tools":
+        lines = [text for cls, text in feed if cls in ("tool", "ok", "err")]
+    elif scope == "last":
+        lines = _last_answer(feed)
+    else:
+        lines = [text for _cls, text in feed]
+    text = "\n".join(lines).strip("\n")
+    if extra and scope == "all":
+        text = f"{text}\n{extra}".strip("\n")
+    return text
+
+
+def _last_answer(feed: list[tuple[str, str]]) -> list[str]:
+    """The trailing run of assistant rows (one answer, gap-free)."""
+    end = next(
+        (i for i in range(len(feed) - 1, -1, -1)
+         if feed[i][0] == "assistant" and str(feed[i][1]).strip()),
+        None,
+    )
+    if end is None:
+        return []
+    start = end
+    while start > 0 and feed[start - 1][0] == "assistant":
+        start -= 1
+    return [text for _cls, text in feed[start:end + 1]]
+
+
+def describe_copy(text: str) -> str:
+    """``N 行 · M 字符`` — the confirmation tail after a finished copy."""
+    return f"{len(text.splitlines())} 行 · {len(text)} 字符"
 
 
 def transcript_feed_lines(rows):

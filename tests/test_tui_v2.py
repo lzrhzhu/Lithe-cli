@@ -10,7 +10,66 @@ from lithe_cli.ttui import (
     header_text,
     sidebar_markup,
 )
-from lithe_cli.tui import TuiState, transcript_feed_lines
+from lithe_cli.tui import (
+    COPY_SCOPES,
+    TuiState,
+    describe_copy,
+    feed_text,
+    parse_copy_scope,
+    transcript_feed_lines,
+)
+
+
+def test_parse_copy_scope_accepts_aliases_and_rejects_junk():
+    assert parse_copy_scope("") == "last"
+    assert parse_copy_scope("  last ") == "last"
+    assert parse_copy_scope("全部") == "all"
+    assert parse_copy_scope("工具") == "tools"
+    assert parse_copy_scope("输入") == "user"
+    assert parse_copy_scope("nonsense") is None
+    assert set(COPY_SCOPES) == {"last", "all", "user", "tools"}
+
+
+def test_feed_text_scopes_pick_the_right_rows():
+    feed = [
+        ("user", "把 a.txt 改一下"),
+        ("tool", "◆ edit_file"),
+        ("ok", "✓ 编辑 a.txt（+3 -1 行） 0.0s"),
+        ("assistant", "已完成。"),
+        ("assistant", "还要我提交吗？"),
+        ("dim", "  · read_file：a.txt（12 行）"),
+    ]
+    assert feed_text(feed, "all").splitlines()[0] == "把 a.txt 改一下"
+    assert feed_text(feed, "user") == "把 a.txt 改一下"
+    # The whole trailing assistant run is one answer, not just its last row.
+    assert feed_text(feed, "last") == "已完成。\n还要我提交吗？"
+    tools = feed_text(feed, "tools")
+    assert "◆ edit_file" in tools and "✓ 编辑 a.txt" in tools
+    assert "已完成。" not in tools
+
+
+def test_feed_text_last_does_not_walk_into_earlier_answers():
+    feed = [
+        ("assistant", "第一轮回答"),
+        ("user", "追问"),
+        ("assistant", "第二轮回答"),
+    ]
+    assert feed_text(feed, "last") == "第二轮回答"
+
+
+def test_feed_text_streaming_text_is_the_newest_answer():
+    feed = [("assistant", "上一轮")]
+    # The in-flight answer is not in the feed yet: it *is* the last answer.
+    assert feed_text(feed, "last", extra="正在写的回答") == "正在写的回答"
+    # ...and it is appended as a tail for the whole-conversation copy.
+    assert feed_text(feed, "all", extra="正在写的回答") == \
+        "上一轮\n正在写的回答"
+
+
+def test_feed_text_empty_feed_yields_empty_text():
+    assert feed_text([], "last") == ""
+    assert feed_text([], "all") == ""
+    assert describe_copy("a\nb") == "2 行 · 3 字符"
 
 
 def test_sidebar_sections_show_session_and_model():

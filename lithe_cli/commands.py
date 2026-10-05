@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
+# The /copy scope vocabulary lives with the feed it extracts from, so the
+# completion hint, the help line and the parser can never drift apart.
+from .tui import COPY_SCOPE_HELP
+
 # name → (args hint, one-line description); order is the help order.
 COMMANDS: dict[str, tuple[str, str]] = {
     "help": ("", "显示这条帮助"),
@@ -26,6 +30,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "profile": ("[名称]", "查看/切换 provider 档案"),
     "set": ("[名称] [值]", "查看/调整运行设置（F5 同效）；面板内空格连切不关闭、Enter 切换并关闭，下一轮生效"),
     "tools": ("", "列出已注册的工具"),
+    "copy": (f"[{COPY_SCOPE_HELP}]", "复制对话文本到系统剪贴板（右键同效）；默认最后一条回答"),
     "undo": ("[run]", "撤销当前会话最近一轮（或指定 run）的文件改动"),
     "sidebar": ("", "显示/隐藏右侧状态栏（F2 同效）"),
     "exit": ("", "退出（等同 /quit）"),
@@ -52,6 +57,10 @@ class ActionResult:
     overlay: str | None = None  # TUI picker: "sessions" | "model" | "set"
     toggle_sidebar: bool = False
     changed: bool = False  # model/session changed → refresh banner/sidebar
+    # /copy: which slice of the feed the front-end should put on the
+    # clipboard. The workbench only parses it — the text itself lives in
+    # the front-end (feed in the TUI, store transcript in the plain REPL).
+    copy_scope: str | None = None
     # Zero-arg coroutine the frontend must run: plain → asyncio.run,
     # TUI → create_task (so /models fetches never block the screen).
     awaitable: Callable[[], Any] | None = None

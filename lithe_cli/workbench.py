@@ -30,6 +30,7 @@ from .commands import ActionResult, help_text
 from .config import Config
 from .profiles import ProfileStore, fetch_models
 from .sessions import SessionManager, auto_title, format_session_rows
+from .tui import COPY_SCOPE_HELP, parse_copy_scope
 
 # Session-adjustable settings for /set: (user key, cfg attr, label, kind).
 # Order is the /set display order. Only per-turn assembly inputs belong
@@ -718,6 +719,14 @@ class Workbench:
             save = "--save" in arg
             level = arg.replace("--save", "").strip()
             return self.set_reasoning(level, save=save)
+        if cmd == "copy":
+            scope = parse_copy_scope(arg)
+            if scope is None:
+                result.say("err", f"用法：/copy [{COPY_SCOPE_HELP}]"
+                                  "（不写参数即最后一条回答）")
+                return result
+            result.copy_scope = scope
+            return result
         if cmd == "sidebar":
             result.toggle_sidebar = True
             return result
