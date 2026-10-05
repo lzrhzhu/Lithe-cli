@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.2 (2026-10-05)
+
+The subagent-visibility round: a delegation used to be a black box —
+the call line said `delegate_parallel` and nothing else, the workers'
+tool calls were invisible, and the footer ignored the delegation
+footprint. All five display gaps are closed; no kernel changes.
+
+- **live subagent progress** — `register_subagents` now wires the
+  kernel's `on_subagent_event` hook: every worker's tool calls,
+  results, errors and answers render live with its display name
+  (`[检索员] ⚒ search_files · …`), in both the plain line mode and the
+  Textual feed. Thin events' capped JSON args are parsed back for the
+  label; per-worker `step` chatter is skipped.
+- **`subagent_start` / `subagent_end` records** — the events the
+  delegate tools already returned in `ToolResult.ui` are rendered
+  instead of dropped: after a delegation, the feed shows what each
+  agent was tasked with (`▸ 检索员：…`) and how it ended
+  (`▪ 检索员 · 完成 · 5 步 · 2 处改动`, status localized).
+- **delegation call labels** — `tool_call_label` understands the
+  delegation argument shapes: `delegate · researcher：任务摘要` and
+  `delegate_parallel · researcher、coder（2 项）` instead of a bare
+  tool name.
+- **footer delegation footprint** — the run wrap-up appends
+  `delegations N · sub-cost X.XXXX` from the kernel's done-event
+  breakdown (subagent spend was already folded into the totals; now it
+  is also visible as its own number).
+- **footer context watermark** — the done footer carries
+  `ctx P%` (or `ctx Ntk` without a declared window) by default; the
+  TUI sidebar gauge is unchanged.
+
 ## 0.1.1 (2026-10-04)
 
 Clean renumber: every earlier PyPI release was deleted at the

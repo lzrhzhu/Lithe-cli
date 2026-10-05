@@ -46,7 +46,20 @@ from lithe.bundles.workspace import register_file_tools
 from lithe.bundles.todos import register_todo_tools
 
 from .config import Config
-from .ui import CYAN, GREEN, YELLOW, ui
+from .ui import (
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    MAGENTA,
+    RED,
+    SUBAGENT_STATUS,
+    YELLOW,
+    display_width,
+    truncate,
+    tool_call_label,
+    ui,
+)
 
 SYSTEM_PROMPT_BASE = (
     "你是运行在命令行里的助理，工作区是用户的当前目录。"
@@ -238,12 +251,18 @@ _OPERATOR_PROMPT = (
 )
 
 
-def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry):
+def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry,
+                       on_event=None):
     """Register delegate/delegate_parallel over the CLI's default roster.
 
     Must run after ``build_host`` (the engine shares the host's registry,
     store and LLM config — children inherit the endpoint, retry policy and
     budgets; parallel siblings share one live cost ceiling, kernel ≥0.1.0).
+    ``on_event`` is the caller's event channel (the TUI's state folder, the
+    workbench emitter); the kernel's ``on_subagent_event`` progress hook is
+    wired onto it so live subagent heartbeats reach the same front-end as
+    the orchestrator's own events. Without a channel (plain `lithe run`),
+    they render through ``render_event`` directly.
     Returns the engine (roster inspection for hosts and tests).
     """
     from lithe.bundles.subagents import (
@@ -284,7 +303,22 @@ def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry):
     # A spec whose tool list filtered to nothing can do nothing meaningful;
     # researcher/coder always keep the ever-present file tools.
     specs = [s for s in specs if s.tools]
-    engine = SubagentEngine(host, SubagentRoster(specs))
+    roster = SubagentRoster(specs)
+
+    async def forward_progress(_sub_ctx, ev: dict) -> None:
+        # The kernel emits {"type": "subagent_progress", "agent": id,
+        # "event": <thin runtime event>}; enrich it with the roster's
+        # display name so front-ends can label lines without roster access.
+        spec = roster.get(str(ev.get("agent") or ""))
+        enriched = dict(ev)
+        if spec is not None:
+            enriched["display"] = spec.display
+        if on_event is not None:
+            on_event(enriched)
+        else:
+            render_event(enriched)
+
+    engine = SubagentEngine(host, roster, on_subagent_event=forward_progress)
     register_delegate_tools(reg, engine, parallel=True)
     return engine
 
@@ -296,6 +330,58 @@ def tool_names(cfg: Config) -> list[str]:
     if cfg.subagents:
         names = sorted(names + ["delegate", "delegate_parallel"])
     return names
+
+
+def _render_subagent_progress(ev: dict) -> None:
+    """Render one live subagent heartbeat: ``[检索员] ⚒ read_file · …``.
+
+    The kernel's progress hook caps text (300) and dumps ``tool_call`` args
+    to a capped JSON string, so parse them back for the label. ``step``
+    events are skipped — per-step chatter from every parallel worker is
+    noise, the tool lines carry the substance.
+    """
+    who = str(ev.get("display") or ev.get("agent") or "?")
+    tag = ui.s(f"[{who}]", MAGENTA)
+    inner = ev.get("event") or {}
+    t = inner.get("type")
+    room = max(8, ui.width - display_width(f"  [{who}] "))
+    if t == "tool_call":
+        name = str(inner.get("name") or "")
+        args = inner.get("args")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {}
+        args = args if isinstance(args, dict) else {}
+        label = tool_call_label(name, args)
+        detail = label[len(name):].strip(" ·") if label.startswith(name) else label
+        shown = truncate(detail, max(8, room - display_width(name) - 4))
+        print(f"  {tag} {ui.s('⚒', CYAN)} {ui.s(name, CYAN, BOLD)} "
+              f"{ui.s(shown, DIM)}")
+    elif t == "tool_result":
+        ok = bool(inner.get("ok"))
+        summary = str(inner.get("summary") or "").replace("\n", " ")
+        if not ok and inner.get("error"):
+            # Same rule as the orchestrator's failed calls: a bare
+            # "参数错误" summary without the diagnostic tells nothing.
+            detail = str(inner["error"]).replace("\n", " ")
+            if detail and summary and (detail in summary or summary in detail):
+                summary = detail if len(detail) > len(summary) else summary
+            elif detail:
+                summary = f"{summary} · {detail}" if summary else detail
+        mark = ui.s("✓", GREEN) if ok else ui.s("✗", RED)
+        print(f"  {tag} {mark} "
+              f"{ui.s(truncate(summary, max(8, room - 4)), GREEN if ok else RED)}")
+    elif t == "assistant":
+        text = str(inner.get("text") or "").replace("\n", " ").strip()
+        if text:
+            print(f"  {tag} {ui.s(truncate(text, max(8, room - 2)), DIM)}")
+    elif t == "error":
+        msg = str(inner.get("message") or "").replace("\n", " ")
+        print(f"  {tag} {ui.s('!', RED)} {ui.s(truncate(msg, max(8, room - 4)), RED)}")
+    elif t == "cancelled":
+        print(f"  {tag} {ui.s('~ 已取消', YELLOW)}")
 
 
 def render_event(
@@ -345,6 +431,32 @@ def render_event(
         # update_todos replaced the list; print what it now contains —
         # the tool's own result line only reports the item count.
         ui.todo_change(ev.get("new") or [])
+    elif t == "subagent_progress":
+        # Live heartbeat from a running subagent (kernel on_subagent_event,
+        # wired in register_subagents): each worker's tool calls and
+        # outputs, labeled with its display name.
+        _render_subagent_progress(ev)
+    elif t == "subagent_start":
+        # Emitted in ToolResult.ui after the delegation finished: the
+        # per-agent record of what it was tasked with.
+        who = str(ev.get("display") or ev.get("agent") or "?")
+        task = str(ev.get("task") or "").replace("\n", " ").strip()
+        line = f"{who}：{truncate(task, max(8, ui.width - 14))}" if task else who
+        print(f"  {ui.s('▸', MAGENTA)} {ui.s(line, MAGENTA)}")
+    elif t == "subagent_end":
+        who = str(ev.get("display") or ev.get("agent") or "?")
+        status = str(ev.get("status") or "")
+        zh = SUBAGENT_STATUS.get(status, status or "?")
+        color = (GREEN if status == "done"
+                 else YELLOW if status in ("cancelled", "max_steps")
+                 else RED) if status else None
+        bits = [ui.s(zh, color) if color else zh]
+        if ev.get("steps") is not None:
+            bits.append(f"{ev['steps']} 步")
+        if ev.get("changes"):
+            bits.append(f"{ev['changes']} 处改动")
+        print(f"  {ui.s('▪', MAGENTA)} {ui.s(who, MAGENTA, BOLD)} · "
+              f"{' · '.join(bits)}")
     elif t == "error":
         ui.error(str(ev.get("message", "")))
     elif t == "cancelled":
@@ -408,7 +520,7 @@ async def execute(
     reg = build_registry(cfg, approver)
     host = build_host(cfg, reg)
     if cfg.subagents:
-        register_subagents(cfg, host, reg)
+        register_subagents(cfg, host, reg, on_event=on_event)
     rid = run_id or uuid.uuid4().hex[:12]
     extra = {"conversation_id": conversation_id} if conversation_id is not None else {}
     ctx = AgentContext(run_id=rid, user_id=cfg.user_id, extra=extra)

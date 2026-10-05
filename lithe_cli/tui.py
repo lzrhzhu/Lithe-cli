@@ -18,11 +18,12 @@ Pure data and formatting only — no terminal ownership of any kind.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
 
-from .ui import fmt_duration, tool_call_label, truncate
+from .ui import SUBAGENT_STATUS, fmt_duration, tool_call_label, truncate
 
 _STATUS_DONE = "done"
 
@@ -240,6 +241,60 @@ class TuiState:
             # step boundary; render it as a user line so the transcript
             # shows why the model's course changed.
             self.say("user", str(ev.get("text") or ""))
+        elif kind == "subagent_start":
+            # Per-delegation record (ToolResult.ui): which worker got what
+            # task — the group's feed line, labeled with the display name.
+            who = str(ev.get("display") or ev.get("agent") or "?")
+            task = str(ev.get("task") or "").replace("\n", " ").strip()
+            self.say("tool", f"▸ {who}：{task[:120]}" if task else f"▸ {who}")
+        elif kind == "subagent_end":
+            who = str(ev.get("display") or ev.get("agent") or "?")
+            status = str(ev.get("status") or "")
+            bits = [SUBAGENT_STATUS.get(status, status or "?")]
+            if ev.get("steps") is not None:
+                bits.append(f"{ev['steps']} 步")
+            if ev.get("changes"):
+                bits.append(f"{ev['changes']} 处改动")
+            cls = ("ok" if ev.get("ok")
+                   else "warn" if status == "cancelled" else "err")
+            self.say(cls, f"▪ {who} · " + " · ".join(bits))
+        elif kind == "subagent_progress":
+            # Live heartbeat (kernel on_subagent_event, wired in
+            # register_subagents): each worker's tool calls and outputs,
+            # prefixed so parallel workers stay distinguishable.
+            who = str(ev.get("display") or ev.get("agent") or "?")
+            inner = ev.get("event") or {}
+            t = inner.get("type")
+            if t == "tool_call":
+                name = str(inner.get("name") or "")
+                args = inner.get("args")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (ValueError, TypeError):
+                        args = {}
+                args = args if isinstance(args, dict) else {}
+                self.say("tool", f"[{who}] ◆ {tool_call_label(name, args)}")
+            elif t == "tool_result":
+                ok = bool(inner.get("ok"))
+                label = str(inner.get("summary") or "").replace("\n", " ")
+                if not ok and inner.get("error"):
+                    detail = str(inner["error"]).replace("\n", " ")
+                    if detail and label and (detail in label or label in detail):
+                        label = detail if len(detail) > len(label) else label
+                    elif detail:
+                        label = f"{label} · {detail}" if label else detail
+                self.say("ok" if ok else "err",
+                         f"[{who}] {'✓' if ok else '✗'} {label}")
+            elif t == "assistant":
+                text = str(inner.get("text") or "").replace("\n", " ").strip()
+                if text:
+                    self.say("dim", f"[{who}] {text[:200]}")
+            elif t == "error":
+                msg = str(inner.get("message") or "出错").replace("\n", " ")
+                self.say("err", f"[{who}] {msg[:200]}")
+            elif t == "cancelled":
+                self.say("warn", f"[{who}] 已取消")
         elif kind == "done":
             status = str(ev.get("status") or _STATUS_DONE)
             self.last_status = status
@@ -262,6 +317,13 @@ class TuiState:
                 self._turn_cost = float(ev["cost"])
             self._done_seen = True
             self._fold_turn()
+            if ev.get("subagent_delegations"):
+                # Delegation footprint in the feed: count + subagent-only
+                # spend (the folded cost above already includes it).
+                extra = f"委派 {ev['subagent_delegations']} 次"
+                if ev.get("subagent_cost"):
+                    extra += f" · 子代理花费 ${float(ev['subagent_cost']):.4f}"
+                self.say("dim", extra)
             if ev.get("context_tokens") is not None:
                 self.context_tokens = int(ev["context_tokens"])
             if ev.get("context_window") is not None:

@@ -32,6 +32,16 @@ _OK_STATES = frozenset({"done"})
 _BAD_STATES = frozenset({"failed", "error", "budget_exceeded", "max_steps"})
 _WARN_STATES = frozenset({"cancelled", "running"})
 
+# Subagent end-states (kernel RunStats.status) → display text, shared by the
+# line renderer and the TUI feed.
+SUBAGENT_STATUS = {
+    "done": "完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+    "budget_exceeded": "预算超限",
+    "max_steps": "步数上限",
+}
+
 _ROLE_STYLES = {
     "user": BLUE,
     "assistant": GREEN,
@@ -119,6 +129,22 @@ def tool_call_label(name: str, args: dict) -> str:
         ]
         files = "、".join(dict.fromkeys(paths))
         return f"{name} · {files}" if files else f"{name} · 文件补丁"
+    if name == "delegate":
+        agent = str(args.get("agent") or "").strip()
+        task = str(args.get("task") or "").strip().replace("\n", " ")
+        if agent and task:
+            return f"{name} · {agent}：{truncate(task, 60)}"
+        if agent:
+            return f"{name} · {agent}"
+        return name
+    if name == "delegate_parallel":
+        tasks = args.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            agents = [str(t.get("agent") or "?") if isinstance(t, dict) else "?"
+                      for t in tasks]
+            roster = "、".join(dict.fromkeys(agents))
+            return f"{name} · {roster}（{len(tasks)} 项）"
+        return name
     for key in ("query", "pattern", "agent", "command", "url"):
         value = args.get(key)
         if isinstance(value, str) and value.strip():
@@ -295,6 +321,14 @@ class UI:
         cost = ev.get("cost")
         if cost:
             parts.append(f"cost {cost:.4f}")
+        if ev.get("subagent_delegations"):
+            parts.append(f"delegations {int(ev['subagent_delegations'])}")
+        if ev.get("subagent_cost"):
+            parts.append(f"sub-cost {float(ev['subagent_cost']):.4f}")
+        if ev.get("context_percent") is not None:
+            parts.append(f"ctx {ev['context_percent']}%")
+        elif ev.get("context_tokens"):
+            parts.append(f"ctx {ev['context_tokens']}tk")
         duration = fmt_duration(ev.get("duration_s"))
         if duration:
             parts.append(duration)

@@ -133,3 +133,115 @@ def test_set_subagents_toggles_and_warns(tmp_path):
 
 def test_system_prompt_mentions_delegation():
     assert "delegate" in build_system_prompt(Config(subagents=True))
+
+
+def test_delegation_renders_live_progress_and_records(tmp_path, capsys):
+    """行模式下委派全程可见：调用标签带 roster、实时心跳带显示名、
+    start/end 记录与 footer 委派计数。"""
+    cfg = make_config(tmp_path, DELEGATE_SCRIPT)
+    cfg.subagents = True
+    cfg.workspace_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.workspace_dir / "a.md").write_text("- 待办", encoding="utf-8")
+
+    from lithe_cli.agent import execute
+
+    rid, done, host = asyncio.run(execute(cfg, "看看 a.md 是什么"))
+    assert done["status"] == "done"
+    out = capsys.readouterr().out
+    # the parallel call line names the roster and the task count
+    assert "researcher（1 项）" in out
+    # live heartbeat: the worker's answer, labeled with its display name
+    assert "[检索员]" in out
+    assert "a.md 的内容是待办清单" in out
+    # per-agent start/end records follow the delegation's tool_result
+    assert "▸ 检索员：找一下 a.md 里写了什么" in out
+    assert "▪ 检索员 · 完成" in out
+    # the footer carries the delegation footprint
+    assert "delegations 1" in out
+
+
+def test_tool_call_labels_delegation():
+    from lithe_cli.ui import tool_call_label
+
+    label = tool_call_label("delegate", {"agent": "researcher",
+                                         "task": "找一下 a.md 里写了什么"})
+    assert label == "delegate · researcher：找一下 a.md 里写了什么"
+    assert tool_call_label("delegate", {"agent": "researcher"}) == \
+        "delegate · researcher"
+    par = tool_call_label("delegate_parallel", {"tasks": [
+        {"agent": "researcher", "task": "查 a"},
+        {"agent": "coder", "task": "改 b"},
+        {"agent": "researcher", "task": "查 c"},
+    ]})
+    assert par == "delegate_parallel · researcher、coder（3 项）"
+
+
+def test_render_event_subagent_records(capsys):
+    from lithe_cli.agent import render_event
+
+    render_event({"type": "subagent_start", "agent": "researcher",
+                  "display": "检索员", "task": "审查配置"})
+    render_event({"type": "subagent_end", "agent": "researcher",
+                  "display": "检索员", "status": "done", "steps": 4,
+                  "changes": 2, "ok": True})
+    out = capsys.readouterr().out
+    assert "▸ 检索员：审查配置" in out
+    assert "▪ 检索员 · 完成 · 4 步 · 2 处改动" in out
+
+
+def test_render_event_subagent_progress(capsys):
+    from lithe_cli.agent import render_event
+
+    render_event({"type": "subagent_progress", "agent": "coder",
+                  "display": "编码员", "event": {
+                      "type": "tool_call", "name": "read_file",
+                      "args": '{"path": "cfg.py"}'}})
+    render_event({"type": "subagent_progress", "agent": "coder",
+                  "display": "编码员", "event": {
+                      "type": "tool_result", "ok": False,
+                      "summary": "参数错误", "error": "文件不存在"}})
+    out = capsys.readouterr().out
+    assert "[编码员]" in out
+    assert "read_file" in out and "cfg.py" in out
+    assert "✗" in out and "文件不存在" in out
+
+
+def test_footer_shows_delegation_and_context(capsys):
+    from lithe_cli.ui import UI
+
+    UI(color=False).footer({"status": "done", "steps": 3, "tokens": 900,
+                            "subagent_delegations": 2,
+                            "subagent_cost": 0.0123,
+                            "context_percent": 42,
+                            "duration_s": 10.0})
+    out = capsys.readouterr().out
+    assert "delegations 2" in out
+    assert "sub-cost 0.0123" in out
+    assert "ctx 42%" in out
+
+
+def test_tui_folds_subagent_events():
+    from lithe_cli.tui import TuiState
+
+    state = TuiState("m", "/ws", 5)
+    state.on_event({"type": "subagent_start", "agent": "researcher",
+                    "display": "检索员", "task": "查 a.md"})
+    state.on_event({"type": "subagent_progress", "agent": "researcher",
+                    "display": "检索员", "event": {
+                        "type": "tool_call", "name": "read_file",
+                        "args": '{"path": "a.md"}'}})
+    state.on_event({"type": "subagent_progress", "agent": "researcher",
+                    "display": "检索员", "event": {
+                        "type": "tool_result", "ok": True,
+                        "summary": "读取 a.md"}})
+    state.on_event({"type": "subagent_end", "agent": "researcher",
+                    "display": "检索员", "status": "done", "steps": 2,
+                    "changes": 0, "ok": True})
+    state.on_event({"type": "done", "status": "done", "steps": 2,
+                    "subagent_delegations": 1, "subagent_cost": 0.01})
+    feed = "\n".join(text for _, text in state.feed)
+    assert "▸ 检索员：查 a.md" in feed
+    assert "[检索员] ◆ read_file · 读取 a.md" in feed
+    assert "[检索员] ✓ 读取 a.md" in feed
+    assert "▪ 检索员 · 完成 · 2 步" in feed
+    assert "委派 1 次" in feed and "子代理花费 $0.0100" in feed
