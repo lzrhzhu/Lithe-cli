@@ -1,12 +1,12 @@
 # Changelog
 
-## 0.9.4 (2026-10-04)
+## 0.1.1 (2026-10-04)
 
-Renumbered baseline: the PyPI release history was cleaned up (old
-releases deleted; their version numbers and filenames are permanently
-retired by PyPI) and the published line restarts here. This release
-contains everything from the rounds previously numbered 0.9.4 and 0.9.5.
-Requires lithe ≥ 0.9.3.
+Clean renumber: every earlier PyPI release was deleted at the
+maintainer's request; PyPI permanently retires deleted version numbers
+and filenames — 0.1.0 of this package was among them — so 0.1.1 is the
+lowest available version. This release contains all development to date
+(the rounds previously numbered 0.9.3/0.9.4/0.9.5). Requires lithe ≥ 0.1.0.
 
 - **`--subagents` now defaults to on** — the default roster only carries
   already-registered tools (researcher filters to the read tools, coder to

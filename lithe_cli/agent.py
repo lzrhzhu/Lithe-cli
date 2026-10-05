@@ -243,7 +243,7 @@ def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry):
 
     Must run after ``build_host`` (the engine shares the host's registry,
     store and LLM config — children inherit the endpoint, retry policy and
-    budgets; parallel siblings share one live cost ceiling, kernel ≥0.9.3).
+    budgets; parallel siblings share one live cost ceiling, kernel ≥0.1.0).
     Returns the engine (roster inspection for hosts and tests).
     """
     from lithe.bundles.subagents import (
