@@ -42,7 +42,7 @@ from .tui import (
     feed_text,
     transcript_feed_lines,
 )
-from .ui import fmt_duration
+from .ui import fmt_duration as fmt_duration  # noqa: F401 — legacy re-export
 from . import ttui_widgets as _widgets
 from .ttui_widgets import (
     ConfirmModal, ConversationPane, HistoryInput, PickerModal, WbEvent,

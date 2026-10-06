@@ -130,6 +130,8 @@ def build_llm(cfg: Config) -> LLMConfig:
         "api_key": cfg.api_key or "unused",
         "timeout": cfg.timeout,
         "attempts": cfg.attempts,
+        "sleep_429": cfg.sleep_429,
+        "sleep_err": cfg.sleep_err,
         "stream": cfg.stream,
         "context_window": cfg.context_window,
         "reasoning_effort": cfg.reasoning_effort,

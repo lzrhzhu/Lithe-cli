@@ -49,6 +49,8 @@ _SETTING_DEFS: list[tuple[str, str, str, str]] = [
     ("max-steps", "max_steps", "工具循环步数上限", "int"),
     ("timeout", "timeout", "单次模型调用超时（秒）", "float"),
     ("attempts", "attempts", "模型调用重试次数", "int"),
+    ("sleep-429", "sleep_429", "429 重试退避基数（秒）", "float"),
+    ("sleep-err", "sleep_err", "网络/5xx 重试退避基数（秒）", "float"),
     ("temperature", "temperature", "采样温度（off = 端点默认）", "float"),
     ("max-output-tokens", "max_tokens", "单次调用输出上限（off = 端点默认）", "int"),
     ("max-cost", "max_cost", "单轮成本预算 $（off = 不限）", "float"),

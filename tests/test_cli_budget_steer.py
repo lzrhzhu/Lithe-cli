@@ -98,6 +98,20 @@ def test_preset_extra_body_merges_under_profile_fields(tmp_path):
     assert llm.extra_body.get("route") == "fallback"
 
 
+def test_retry_backoff_reaches_llm_config(tmp_path):
+    """重试必须带退避基数：立即原样重发只会再撞同一个限流——一次瞬时
+    上游错误就能连杀委派与编排者的下一次调用（会话 #54 的失败形状）。
+    默认非零，且 profile 字段可覆盖。"""
+    cfg = make_config(tmp_path, [])
+    assert cfg.sleep_429 == 2.0 and cfg.sleep_err == 1.0
+    llm = build_llm(cfg)
+    assert llm.attempts == 2
+    assert llm.sleep_429 == 2.0 and llm.sleep_err == 1.0
+    cfg.sleep_429, cfg.sleep_err = 5.0, 0.0
+    llm = build_llm(cfg)
+    assert llm.sleep_429 == 5.0 and llm.sleep_err == 0.0
+
+
 def test_set_budget_and_sampling_knobs(tmp_path):
     cfg = make_config(tmp_path, [])
     wb = Workbench(cfg)

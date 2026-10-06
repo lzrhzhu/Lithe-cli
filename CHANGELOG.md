@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.5 (2026-10-06)
+
+The transient-failure round, from the same session that exposed lithe
+0.1.3's diagnosability gap: a momentary upstream error ended a whole
+`delegate_parallel` turn because the CLI's retry policy was
+`attempts=2` with zero backoff — the automatic retry fired immediately and
+lost to the same throttle that had just refused the first request, twice in
+a row (delegation, then the orchestrator's own next call).
+
+- **real retry backoff by default** — new `sleep_429` (2.0s) / `sleep_err`
+  (1.0s) bases between retryable failures, jittered and scaled by attempt
+  (a gateway's `Retry-After` still wins); settable via `--sleep-429` /
+  `--sleep-err`, the saved profile, or `/set`. An immediate duplicate
+  request stays available with an explicit `0`.
+- **`lithe log` shows why a run failed** — failed runs carry the kernel's
+  error diagnostic on their stored final row (lithe ≥ 0.1.3); `lithe log`
+  prints it as a red `error:` line ahead of `final:`, so a post-mortem no
+  longer needs the process's stderr.
+
 ## 0.1.4 (2026-10-05)
 
 The stability round: a crash in the destructive-command approval dialog,

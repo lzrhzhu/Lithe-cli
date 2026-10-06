@@ -95,6 +95,8 @@ def _cmd_log(cfg: Any, run_id: str) -> int:
         + (f"  耗时={duration}" if duration else "")
     )
     print(f"task: {run.task}")
+    if run.error:
+        print(ui.s(f"error: {run.error[:500]}", RED))
     if run.final:
         print(f"final: {run.final[:500]}")
     print(ui.section("messages"))

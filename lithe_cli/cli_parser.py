@@ -95,6 +95,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-call timeout in seconds")
         sp.add_argument("--attempts", type=int, default=2,
                         help="per-call retry attempts")
+        sp.add_argument(
+            "--sleep-429", dest="sleep_429", type=float, default=2.0,
+            help="base backoff seconds between 429 retries, jittered and "
+            "scaled by attempt (default: 2.0; 0 retries immediately)",
+        )
+        sp.add_argument(
+            "--sleep-err", dest="sleep_err", type=float, default=1.0,
+            help="base backoff seconds between other retryable failures "
+            "(5xx / network), jittered (default: 1.0; 0 retries immediately)",
+        )
         sp.add_argument("--temperature", type=float, default=None,
                         help="sampling temperature (default: profile field, else endpoint default)")
         sp.add_argument(

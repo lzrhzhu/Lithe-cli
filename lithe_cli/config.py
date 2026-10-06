@@ -106,6 +106,14 @@ class Config:
     context_window: int | None = None
     timeout: float = 180.0
     attempts: int = 2
+    # Retry backoff bases (LLMConfig.sleep_429 / sleep_err): an immediate
+    # duplicate request — the sleeps' 0.0 default — loses to the same
+    # rate-limit that just refused the first one, burning the retry budget
+    # of a transiently throttled gateway in milliseconds. Nonzero defaults
+    # give the one automatic retry a real chance; a Retry-After header (when
+    # the gateway sends one) always wins over the base.
+    sleep_429: float = 2.0
+    sleep_err: float = 1.0
     download: bool = False
     verbose: bool = False
     code: bool = False
@@ -348,6 +356,8 @@ def load_config(args: Any) -> Config:
         context_window=g("context_window", None) or saved.get("context_window"),
         timeout=g("timeout", 180.0),
         attempts=g("attempts", 2),
+        sleep_429=g("sleep_429", 2.0),
+        sleep_err=g("sleep_err", 1.0),
         download=g("download", False),
         verbose=g("verbose", False),
         code=g("code", False),
