@@ -101,6 +101,19 @@ def test_header_shows_profile_and_session():
     assert "zhipu · glm-4.6" in text and "#12" in text and "重构计划" in text
 
 
+def test_render_builders_keep_the_legacy_ttui_import_path():
+    from lithe_cli.ttui import footer_text as legacy_footer
+    from lithe_cli.ttui import header_text as legacy_header
+    from lithe_cli.ttui import sidebar_markup as legacy_sidebar
+    from lithe_cli.ttui_render import footer_text, header_text, sidebar_markup
+
+    state = TuiState("m", "/ws", 5)
+    assert legacy_header is header_text
+    assert legacy_sidebar is sidebar_markup
+    assert legacy_footer is footer_text
+    assert legacy_header(state, "1") == header_text(state, "1")
+
+
 def test_sidebar_marks_running_and_failed_tools():
     state = TuiState("m", "/ws", 5)
     state.on_event({"type": "run_start"})

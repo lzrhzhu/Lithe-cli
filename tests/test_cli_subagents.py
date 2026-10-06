@@ -62,6 +62,25 @@ def test_delegation_enabled_by_default_with_opt_out(tmp_path):
     assert "delegate" not in build_system_prompt(off)
 
 
+def test_parser_split_preserves_all_runtime_options():
+    from lithe_cli.cli_parser import build_parser as parser_builder
+    from lithe_cli.main import build_parser
+
+    args = build_parser().parse_args([
+        "run", "--no-subagents", "--no-setup", "--stream",
+        "--max-steps", "7", "--context-window", "8192", "--timeout", "12",
+        "--attempts", "4", "--temperature", "0.2", "--max-output-tokens", "99",
+        "--max-cost", "1.5", "--max-tokens", "200", "--reasoning-effort", "low",
+        "task",
+    ])
+    assert args.subagents is False
+    assert args.no_setup and args.stream
+    assert (args.max_steps, args.context_window, args.timeout, args.attempts) == (7, 8192, 12, 4)
+    assert (args.temperature, args.max_tokens) == (0.2, 99)
+    assert (args.max_cost, args.max_total_tokens, args.reasoning_effort) == (1.5, 200, "low")
+    assert parser_builder().parse_args(["tools"]).command == "tools"
+
+
 def test_delegation_runs_and_records_child_messages(tmp_path, capsys):
     cfg = make_config(tmp_path, DELEGATE_SCRIPT)
     cfg.subagents = True
