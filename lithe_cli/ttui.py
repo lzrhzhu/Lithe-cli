@@ -30,7 +30,7 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Static, TextArea
 
 from .clipboard import deliver_clipboard, write_clipboard_file
 from .config import lithe_home
@@ -47,7 +47,7 @@ from .ui import fmt_duration as fmt_duration  # noqa: F401 — legacy re-export
 from . import ttui_widgets as _widgets
 from .ttui_widgets import (
     ConfirmModal, ConversationPane, HistoryInput, PickerModal, SubagentCard,
-    WbEvent, completion_suggestions, selected_text,
+    HistoryInputSubmitted, WbEvent, completion_suggestions, selected_text,
 )
 from .ttui_render import footer_text, header_text, sidebar_markup
 
@@ -71,7 +71,7 @@ class LitheApp(App):
     .subagent-search { height: 3; margin: 0 1 0 1; border: round #334155; }
     .subagent-output { height: auto; margin: 0 1 0 1; color: #cbd5e1; }
     #side-wrap { width: 44; border: round #475569; padding: 0 1; }
-    #prompt { border: round #475569; }
+    #prompt { height: auto; max-height: 8; border: round #475569; }
     #foot { height: 1; background: #111827; color: #cbd5e1; }
     #picker { width: 60%; height: auto; max-height: 80%;
               border: round #38bdf8; background: $surface; padding: 1 2; }
@@ -162,13 +162,13 @@ class LitheApp(App):
         )
         self._sync_feed()
         self._refresh_chrome()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", HistoryInput).focus()
         # Live turn timer: kernel events alone leave the screen static
         # during long model calls, so the chrome repaints on a heartbeat
         # while a turn runs (elapsed comes from TuiState.elapsed()).
         self.set_interval(0.5, self._tick_elapsed)
         if self.mode == "run" and self.initial_task:
-            self.query_one("#prompt", Input).disabled = True
+            self.query_one("#prompt", HistoryInput).disabled = True
             asyncio.create_task(self._run_one_shot(self.initial_task))
 
     # -- state management --------------------------------------------------------
@@ -417,29 +417,31 @@ class LitheApp(App):
 
     # -- input -------------------------------------------------------------------
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id != "prompt":
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "prompt":
             return
         from .commands import COMMANDS
 
         prompt = self.query_one("#prompt", HistoryInput)
-        prompt.suggestion = completion_suggestions(
-            event.value,
+        prompt.completions = completion_suggestions(
+            event.text_area.text,
             COMMANDS,
             self.state.model_candidates,
             self.state.profile_names,
             [f"#{row['id']}" for row in self.state.sessions],
         )
         strip = self.query_one("#suggest", Static)
-        if prompt.suggestion:
+        if prompt.completions:
             strip.update("[dim]Tab 采纳 →[/] " +
-                         "  ".join(prompt.suggestion[:4]))
+                         "  ".join(prompt.completions[:4]))
             strip.display = True
         else:
             strip.update("")
             strip.display = False
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_history_input_submitted(
+        self, event: HistoryInputSubmitted,
+    ) -> None:
         if event.input.id != "prompt":
             return
         line = event.value.strip()
@@ -714,7 +716,7 @@ class LitheApp(App):
         self._activate(self.wb.current["id"])
 
     def _picker_rename(self, payload) -> None:
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", HistoryInput)
         prompt.value = "/rename "
         prompt.focus()
 
@@ -891,7 +893,7 @@ class LitheApp(App):
             self._cancel_asked = False
             self._sync_feed()
             self._refresh_chrome()
-            self.query_one("#prompt", Input).disabled = False
+            self.query_one("#prompt", HistoryInput).disabled = False
 
 
 async def _driver(app: LitheApp) -> int:

@@ -118,5 +118,6 @@ def footer_text(state: TuiState) -> str:
         timer = f" · {fmt_duration(live)}" if live is not None else ""
         return (f" ● {state.status}{timer} · Ctrl+C 取消 · F3 会话"
                 f" · F4 模型 · F6 推理 ")
-    return (f" ● {state.status} · Enter 发送 · F2 侧栏 · F3 会话 · F4 模型"
+    return (f" ● {state.status} · Enter 发送 · Ctrl+Enter 换行 · F2 侧栏"
+            f" · F3 会话 · F4 模型"
             f" · F5 设置 · F6 推理 · /help ")

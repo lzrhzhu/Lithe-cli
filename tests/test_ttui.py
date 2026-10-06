@@ -633,6 +633,26 @@ def test_app_completion_strip_and_history_recall(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_prompt_submits_multiline_text_and_ctrl_enter_inserts_newline(tmp_path):
+    async def scenario():
+        app = _app(tmp_path, [{"content": "收到完整内容"}])
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            prompt = app.query_one("#prompt")
+            prompt.focus()
+
+            await pilot.press("a", "ctrl+enter", "b")
+            await pilot.pause()
+            assert prompt.text == "a\nb"
+
+            await pilot.press("enter")
+            assert await _run_until_done(pilot, app), "multiline turn did not finish"
+            assert "a\nb" in _conv_text(app)
+            assert "收到完整内容" in _conv_text(app)
+
+    asyncio.run(scenario())
+
+
 def test_history_persists_across_processes(tmp_path, monkeypatch):
     monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
 

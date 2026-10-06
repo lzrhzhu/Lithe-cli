@@ -12,7 +12,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static, TextArea
 
 from .ui import display_width, truncate
 
@@ -31,7 +31,7 @@ def completion_suggestions(
     complete their first argument (cached models, saved profiles, session
     ids). Empty result hides the suggestion strip.
     """
-    if not value.startswith("/"):
+    if "\n" in value or not value.startswith("/"):
         return []
     if " " not in value:
         prefix = value.rstrip()
@@ -52,13 +52,16 @@ def completion_suggestions(
     return [w for w in words if w.startswith(arg) and w != arg][:6]
 
 
-class HistoryInput(Input):
-    """Input with ↑/↓ recall over a persistent FileHistory store."""
+class HistoryInput(TextArea):
+    """Multiline prompt with history recall and persistent FileHistory."""
 
     BINDINGS = [
         Binding("up", "history_prev", "上一条", show=False, priority=True),
         Binding("down", "history_next", "下一条", show=False, priority=True),
         Binding("tab", "accept_suggestion", "采纳", show=False,
+                priority=True),
+        Binding("enter", "submit", "发送", show=False, priority=True),
+        Binding("ctrl+enter", "insert_newline", "换行", show=False,
                 priority=True),
     ]
 
@@ -68,8 +71,23 @@ class HistoryInput(Input):
         self._lines: list[str] = []
         self._pos: int | None = None
         self._draft = ""
-        self.suggestion: list[str] = []
+        self.completions: list[str] = []
         self.reload_history()
+
+    @property
+    def value(self) -> str:
+        """Input-compatible alias used by the workbench and UI code."""
+        return self.text
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self.text = text
+
+    def action_submit(self) -> None:
+        self.post_message(HistoryInputSubmitted(self, self.text))
+
+    def action_insert_newline(self) -> None:
+        self.insert("\n")
 
     def reload_history(self) -> None:
         self._lines = []
@@ -82,8 +100,7 @@ class HistoryInput(Input):
         self._draft = ""
 
     def record(self, line: str) -> None:
-        line = line.strip()
-        if not line:
+        if not line.strip():
             return
         if not self._lines or self._lines[-1] != line:
             self._lines.append(line)
@@ -98,9 +115,15 @@ class HistoryInput(Input):
     def _apply(self, text: str, pos: int | None) -> None:
         self._pos = pos
         self.value = text
-        self.cursor_position = len(text)
+        lines = text.split("\n")
+        self.move_cursor((len(lines) - 1, len(lines[-1])))
 
     def action_history_prev(self) -> None:
+        # Keep normal vertical editing inside a multiline draft; history is
+        # recalled only when the cursor is already on its first line.
+        if self.cursor_location[0] > 0:
+            self.action_cursor_up()
+            return
         if not self._lines:
             return
         if self._pos is None:
@@ -110,6 +133,9 @@ class HistoryInput(Input):
             self._apply(self._lines[self._pos - 1], self._pos - 1)
 
     def action_history_next(self) -> None:
+        if self.cursor_location[0] < len(self.text.split("\n")) - 1:
+            self.action_cursor_down()
+            return
         if self._pos is None:
             return
         if self._pos < len(self._lines) - 1:
@@ -118,11 +144,20 @@ class HistoryInput(Input):
             self._apply(self._draft, None)
 
     def action_accept_suggestion(self) -> None:
-        if self.suggestion:
-            accepted = self.suggestion[0]
+        if self.completions:
+            accepted = self.completions[0]
             self.value = accepted
-            self.cursor_position = len(accepted)
-            self.suggestion = []
+            self.move_cursor((0, len(accepted)))
+            self.completions = []
+
+
+class HistoryInputSubmitted(Message):
+    """A multiline prompt submission, kept separate from TextArea.Changed."""
+
+    def __init__(self, input: HistoryInput, value: str) -> None:
+        super().__init__()
+        self.input = input
+        self.value = value
 
 
 # -- workbench → app message ----------------------------------------------------
