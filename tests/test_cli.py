@@ -552,6 +552,29 @@ def test_system_prompt_puts_each_capability_on_its_own_line():
     assert "\n可以用 run_command" in prompt
 
 
+def test_system_prompt_carries_environment_facts(tmp_path):
+    from lithe_cli.agent import build_system_prompt
+    from lithe_cli.config import Config
+
+    (tmp_path / "lithe").mkdir()
+    (tmp_path / "lithe" / ".git").mkdir()
+    (tmp_path / "notes").mkdir()
+    cfg = Config(workspace_dir=tmp_path)
+    prompt = build_system_prompt(cfg)
+    assert "宿主环境" in prompt
+    assert "不是 git 仓库" in prompt
+    assert "lithe" in prompt and "notes" in prompt
+    assert "独立 git 仓库：lithe" in prompt
+    # the run_command cwd hint rides along only with the shell capability
+    assert "run_command" not in prompt
+    shell_on = build_system_prompt(Config(workspace_dir=tmp_path, shell=True))
+    assert "cwd 参数" in shell_on
+
+    # a root-level repo flips the layout verdict
+    (tmp_path / ".git").mkdir()
+    assert "是 git 仓库" in build_system_prompt(Config(workspace_dir=tmp_path))
+
+
 def test_todo_storage_is_scoped_to_user_and_workspace(tmp_path):
     from lithe_cli.agent import todo_store_path
     from lithe_cli.config import Config

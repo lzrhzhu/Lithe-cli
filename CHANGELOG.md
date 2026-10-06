@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.10 (2026-10-06)
+
+Multiline prompt input plus the environment-facts round, from a usage
+audit of a real delegation session: the subagents' first ~15
+`run_command` calls included ~6 pure path-assumption failures (git at a
+workspace root that is not a repo, CI snippets with project-relative
+paths, a husk `.venv` guessed usable, `.\`-less invocations,
+ANSI-decoded UTF-8). The tools were blameless — the models simply had
+no platform/workspace briefing and `run_command` had no
+working-directory parameter. This release wires both, matching how
+high-success-rate agents solve it (one tool, workdir, containment,
+per-platform prompt facts).
+
+- **the prompt area is multiline** — `HistoryInput` is now a
+  `TextArea`: Enter sends, Ctrl+Enter inserts a newline, history recall
+  stays on ↑/↓ while the cursor is on the first/last line, and command
+  completion hides for multiline drafts. Pasting multi-line text no
+  longer drops everything after the first line.
+- **`run_command` gains `cwd`** — commands target sub-projects via the
+  new kernel parameter instead of stitching `Set-Location`/`cd` prefixes
+  discovered by trial and error. The CLI passes its approver into
+  `register_command_tools`, so a cwd outside the workspace gets the same
+  human-confirmation channel as destructive commands (requires
+  lithe >= 0.1.7).
+- **environment facts in the system prompt** — `environment_facts()`
+  appends host/shell identity and the workspace layout (top-level
+  directories; which of them are independent git repos; whether the root
+  itself is one) to every prompt. The shell line names the actual
+  Windows shell and its chaining idiom; the layout line kills the
+  nested-repo class of first-hour failures.
+- **subagents see the same facts** — delegation prompts are roster spec
+  prompts, not the orchestrator's system prompt; the engine now gets a
+  `prompt_builder` that prepends the same environment facts, so the
+  operator stops re-learning the workspace by failed guesses.
+
 ## 0.1.9 (2026-10-06)
 
 Subagent cards move into the conversation: they now mount inline where the

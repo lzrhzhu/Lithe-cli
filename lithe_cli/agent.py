@@ -96,8 +96,55 @@ def sandbox_backend() -> str:
     return "bwrap" if shutil.which("bwrap") else "passthrough"
 
 
+def environment_facts(cfg: Config) -> str:
+    """Env-fact lines for the system prompt (host, shell, workspace layout).
+
+    The layout line exists because the dominant first-hour failures in a
+    real delegation session were assumption mismatches, not tool bugs:
+    git run at a workspace root that is not a repo while the real repos
+    live in nested sub-directories, CI snippets with project-relative
+    paths, a husk ``.venv`` guessed usable. A few dozen tokens of facts
+    replace each of those wrong guesses (one failed round-trip apiece).
+    The ``run_command`` hint rides along only when the shell capability
+    is on, keeping the no-shell prompt free of the tool's name.
+    """
+    if sys.platform == "win32":
+        if shutil.which("pwsh"):
+            shell = "PowerShell 7+（pwsh）"
+        elif shutil.which("powershell"):
+            shell = "Windows PowerShell 5.1（无 &&，用 cmd1; if ($?) { cmd2 }）"
+        else:
+            shell = "cmd"
+        facts = f"宿主环境：Windows，shell 为 {shell}。"
+    else:
+        facts = "宿主环境：Linux/macOS（POSIX shell）。"
+    root = cfg.workspace_dir.expanduser().resolve()
+    try:
+        entries = sorted(
+            (p for p in root.iterdir()
+             if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name.lower())
+    except OSError:
+        return facts
+    names = [p.name for p in entries[:10]]
+    layout = "、".join(names) if names else "（空）"
+    if len(entries) > 10:
+        layout += f" 等 {len(entries)} 项"
+    line = (f"工作区 {root}（"
+            f"{'是' if (root / '.git').exists() else '不是'} git 仓库）"
+            f"顶层目录：{layout}")
+    repos = [p.name for p in entries if (p / ".git").exists()]
+    if repos:
+        line += f"；其中的独立 git 仓库：{'、'.join(repos)}"
+    if cfg.shell:
+        line += ("。对子项目执行命令用 run_command 的 cwd 参数指定目录"
+                 "（区内自由、区外需用户审批），不要假设工作区根是仓库，"
+                 "也不要在命令里拼接 cd")
+    return facts + "\n" + line
+
+
 def build_system_prompt(cfg: Config) -> str:
-    """Base prompt plus one line per enabled capability."""
+    """Base prompt plus one line per enabled capability, then env facts."""
     extras = []
     if cfg.code:
         extras.append("可以用 run_code 执行 Python 来验证想法、计算或测试。")
@@ -114,8 +161,7 @@ def build_system_prompt(cfg: Config) -> str:
         extras.append("可以用 delegate 把独立子任务委派给子代理（可用名单见工具说明：检索/编码/操作），"
                       "互不依赖的子任务用 delegate_parallel 并行委派；"
                       "子代理与本对话共享预算，汇报时合并它们的结果。")
-    if not extras:
-        return SYSTEM_PROMPT_BASE
+    extras.append(environment_facts(cfg))
     return SYSTEM_PROMPT_BASE + "\n" + "\n".join(extras)
 
 
@@ -196,7 +242,8 @@ def build_registry(
         from lithe.bundles.command import CommandRunner
 
         register_command_tools(
-            reg, lambda ctx: cfg.workspace_dir.resolve(), CommandRunner()
+            reg, lambda ctx: cfg.workspace_dir.resolve(), CommandRunner(),
+            approver=approver,
         )
         # Dangerous-command guard: catastrophic commands never run; the
         # destructive-but-scoped tier (rm -r <path>, git push --force,
@@ -328,7 +375,14 @@ def register_subagents(cfg: Config, host: AgentHost, reg: ToolRegistry,
         else:
             render_event(enriched)
 
-    engine = SubagentEngine(host, roster, on_subagent_event=forward_progress)
+    engine = SubagentEngine(
+        host, roster, on_subagent_event=forward_progress,
+        # Subagents do not inherit the orchestrator's system prompt — the
+        # roster's spec prompts are all they see. Prepending the same env
+        # facts (platform, shell, nested-repo layout) keeps the operator
+        # from re-learning the workspace layout by failed guesses.
+        prompt_builder=lambda spec, ctx: f"{environment_facts(cfg)}\n\n{spec.prompt}",
+    )
     register_delegate_tools(reg, engine, parallel=True)
     return engine
 

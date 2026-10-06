@@ -133,6 +133,29 @@ def test_roster_adapts_to_capability_flags(tmp_path):
     assert "run_command" in op_names
 
 
+def test_subagent_prompt_prepends_environment_facts(tmp_path):
+    """Subagents never see the orchestrator's system prompt — without the
+    facts prepended they re-learn the workspace layout (nested repos,
+    platform) by failed guesses, which is what this fixes."""
+    from lithe import AgentContext
+
+    cfg = make_config(tmp_path, [])
+    cfg.subagents = True
+    cfg.shell = True
+    cfg.workspace_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.workspace_dir / "svc").mkdir()
+    (cfg.workspace_dir / "svc" / ".git").mkdir()
+    reg = build_registry(cfg)
+    host = build_host(cfg, reg)
+    engine = register_subagents(cfg, host, reg)
+    prompt = engine.system_prompt(
+        engine.roster.get("researcher"), AgentContext(run_id="r", user_id="u"))
+    assert "宿主环境" in prompt
+    assert "独立 git 仓库：svc" in prompt
+    # the spec's own persona is intact after the prepended facts
+    assert "只读检索子代理" in prompt
+
+
 def test_set_subagents_toggles_and_warns(tmp_path):
     cfg = make_config(tmp_path, [])
     assert cfg.subagents is True  # default-on since the roster adds no powers
