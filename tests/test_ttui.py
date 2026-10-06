@@ -512,7 +512,10 @@ def test_resumed_session_mounts_persisted_subagent_cards(tmp_path):
                    args=SimpleNamespace(resume=str(cid), cont=False, title=None))
 
     async def scenario():
-        async with app.run_test() as pilot:
+        # wide terminal: the one-line heading truncates the task to the
+        # pane width, so give it room to show "检查 README" in full on
+        # every runner (the assertion would be width-dependent otherwise)
+        async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause()
             cards = list(app.query(SubagentCard))
             assert len(cards) == 1
