@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from lithe_cli.ttui import (  # noqa: E402
     ConfirmModal,
     LitheApp,
     PickerModal,
+    SubagentCard,
     footer_text,
     header_text,
     sidebar_markup,
@@ -392,6 +394,89 @@ async def _settle_bottom(pilot, conv):
         await pilot.pause(0.02)
         if conv.scroll_y >= conv.max_scroll_y - 1:
             return
+
+
+def test_subagent_cards_mount_and_search_independently(tmp_path):
+    async def scenario():
+        app = _app(tmp_path, [])
+        async with app.run_test() as pilot:
+            state = app.state
+            state.on_event({"type": "subagent_start", "agent": "researcher",
+                            "display": "检索员", "task": "找 alpha",
+                            "instance": "researcher:a111"})
+            state.on_event({"type": "subagent_progress", "agent": "researcher",
+                            "display": "检索员", "instance": "researcher:a111",
+                            "event": {"type": "tool_result", "ok": True,
+                                      "summary": "发现 alpha.txt"}})
+            state.on_event({"type": "subagent_start", "agent": "coder",
+                            "display": "编码员", "task": "实现 beta",
+                            "instance": "coder:b222"})
+            state.on_event({"type": "subagent_progress", "agent": "coder",
+                            "display": "编码员", "instance": "coder:b222",
+                            "event": {"type": "tool_result", "ok": True,
+                                      "summary": "修改 beta.py"}})
+            app._sync_feed()
+            await pilot.pause()
+            cards = list(app.query(SubagentCard))
+            assert len(cards) == 2
+            assert {card.instance for card in cards} == {
+                "researcher:a111", "coder:b222"
+            }
+            card = next(c for c in cards if c.instance == "researcher:a111")
+            card._expanded = True
+            card.set_data(state.subagents[card.instance])
+            await pilot.pause()
+            search = card.query_one(".subagent-search")
+            search.value = "alpha"
+            await pilot.pause()
+            output = str(card.query_one(".subagent-output").content)
+            assert "alpha" in output
+            assert "beta" not in output
+            other = next(c for c in cards if c.instance == "coder:b222")
+            assert other._search == ""
+
+    asyncio.run(scenario())
+
+
+def test_resumed_session_mounts_persisted_subagent_cards(tmp_path):
+    from lithe.bundles.store.protocol import StoredMessage
+    from lithe_cli.workbench import Workbench
+
+    cfg = make_config(tmp_path, [])
+    wb = Workbench(cfg)
+    session = wb.new_session(title="恢复子任务")
+    cid = session["id"]
+    run_id = "persisted-subagent-run"
+    wb.store.create_run(run_id, cfg.user_id, "检查项目",
+                        conversation_id=cid)
+    wb.store.add_message(StoredMessage(
+        role="user", content="检查 README", run_id=run_id,
+        user_id=cfg.user_id, subagent="researcher:abcd",
+        meta={"subagent_task": {"agent": "researcher", "display": "检索员",
+                                "task": "检查 README", "instance": "researcher:abcd",
+                                "status": "done", "steps": 3}},
+    ))
+    wb.store.add_message(StoredMessage(
+        role="assistant", content="README 包含使用说明", run_id=run_id,
+        user_id=cfg.user_id, subagent="researcher:abcd",
+    ))
+    app = LitheApp(cfg, None, "chat",
+                   args=SimpleNamespace(resume=str(cid), cont=False, title=None))
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            cards = list(app.query(SubagentCard))
+            assert len(cards) == 1
+            card = cards[0]
+            assert card.instance == "researcher:abcd"
+            assert "检查 README" in str(card.query_one(".subagent-heading").label)
+            assert app.state.subagents[card.instance]["status"] == "done"
+            assert any("README 包含使用说明" in line
+                       for _cls, line in app.state.subagents[card.instance]["lines"])
+            assert not any("检查 README" in line for _cls, line in app.state.feed)
+
+    asyncio.run(scenario())
 
 
 def test_sync_feed_follows_only_when_at_bottom(tmp_path):

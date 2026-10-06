@@ -86,6 +86,26 @@ def test_plain_repl_copy_command_reaches_the_clipboard(
     assert "已复制最后一条回答" in out and "pbcopy" in out
 
 
+def test_transcript_can_include_subagent_instance_rows(tmp_path):
+    wb = Workbench(make_config(tmp_path, []))
+    wb.open(title="有子任务的会话")
+    cid = wb.current["id"]
+    rid = "subagent-history-test"
+    wb.store.create_run(rid, wb.cfg.user_id, "任务", conversation_id=cid)
+    from lithe.bundles.store.protocol import StoredMessage
+
+    wb.store.add_message(StoredMessage(
+        role="user", content="主任务", run_id=rid, user_id=wb.cfg.user_id
+    ))
+    wb.store.add_message(StoredMessage(
+        role="user", content="子任务", run_id=rid, user_id=wb.cfg.user_id,
+        subagent="researcher:abcd",
+    ))
+    assert [r["content"] for r in wb.sessions.transcript(cid)] == ["主任务"]
+    all_rows = wb.sessions.transcript(cid, last=0, include_subagents=True)
+    assert [r.get("subagent") for r in all_rows] == [None, "researcher:abcd"]
+
+
 def test_sessions_subcommand_lists_renames_deletes(tmp_path, capsys):
     from lithe_cli.main import main
 

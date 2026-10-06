@@ -9,7 +9,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 # -- input: completion + persistent history ------------------------------------
 
@@ -172,6 +172,108 @@ class ConversationPane(VerticalScroll):
         self.app.open_copy_menu()
 
 
+class SubagentCard(Vertical):
+    """A collapsible, independently searchable subagent transcript."""
+
+    def __init__(self, instance: str, block: dict | None = None, **kwargs) -> None:
+        safe_id = "subagent-" + "".join(
+            c if c.isalnum() or c in "-_" else "-" for c in instance
+        )
+        super().__init__(id=safe_id, classes="subagent-card", **kwargs)
+        self.instance = instance
+        self._expanded = bool((block or {}).get("expanded"))
+        self._search = str((block or {}).get("search") or "")
+        self._lines: list[tuple[str, str]] = []
+        self._block: dict = {}
+        self._heading = ""
+        if block:
+            self.update_data(block)
+
+    def compose(self) -> ComposeResult:
+        yield Button("", classes="subagent-heading", variant="default")
+        yield Input(placeholder="搜索此子任务…", classes="subagent-search")
+        yield Static("", classes="subagent-output", markup=False)
+
+    def update_data(self, block: dict) -> None:
+        same_block = self._block is block
+        if self.is_mounted and same_block:
+            block["expanded"] = self._expanded
+            block["search"] = self._search
+        self._block = block
+        self._lines = list(block.get("lines") or [])
+        if not (self.is_mounted and same_block):
+            self._expanded = bool(block.get("expanded"))
+            self._search = str(block.get("search") or "")
+
+    def set_data(self, block: dict) -> None:
+        self.update_data(block)
+        display = str(block.get("display") or block.get("agent") or "子代理")
+        suffix = str(block.get("instance") or "").rsplit(":", 1)[-1][:4]
+        task = str(block.get("task") or "（任务描述载入中）").replace("\n", " ")
+        status = str(block.get("status") or "running")
+        status_label = {
+            "running": "运行中", "done": "完成", "max_steps": "步数上限",
+            "failed": "失败", "cancelled": "已取消", "budget_exceeded": "预算超限",
+        }.get(status, status)
+        details = []
+        if block.get("steps") is not None:
+            details.append(f"{block['steps']} 步")
+        if block.get("changes"):
+            details.append(f"{block['changes']} 处改动")
+        detail = " · " + " · ".join(details) if details else ""
+        heading = self.query_one(".subagent-heading", Button)
+        self._heading = f"{display}·{suffix} · {status_label}{detail} · {task}"
+        heading.label = f"{'▾' if self._expanded else '▸'} {self._heading}"
+        search = self.query_one(".subagent-search", Input)
+        output = self.query_one(".subagent-output", Static)
+        if search.value != self._search:
+            search.value = self._search
+        search.display = self._expanded
+        output.display = self._expanded
+        if self._expanded:
+            self._render_lines(search.value, output)
+
+    def refresh_lines(self) -> None:
+        """Refresh transcript text without resetting UI-local search state."""
+        if not self.is_mounted:
+            return
+        self._lines = list(self._block.get("lines") or [])
+        search = self.query_one(".subagent-search", Input)
+        output = self.query_one(".subagent-output", Static)
+        if self._expanded:
+            self._render_lines(search.value, output)
+
+    def _render_lines(self, query: str, output: Static) -> None:
+        needle = query.casefold().strip()
+        lines = [text for _cls, text in self._lines
+                 if not needle or needle in text.casefold()]
+        output.update("\n".join(lines) if lines else ("（没有匹配内容）" if needle else "（暂无子任务输出）"))
+
+    def on_mount(self) -> None:
+        self.set_data(self._block)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if "subagent-heading" not in event.button.classes:
+            return
+        self._expanded = not self._expanded
+        self._block["expanded"] = self._expanded
+        heading = self.query_one(".subagent-heading", Button)
+        heading.label = f"{'▾' if self._expanded else '▸'} {self._heading}"
+        search = self.query_one(".subagent-search", Input)
+        output = self.query_one(".subagent-output", Static)
+        search.display = self._expanded
+        output.display = self._expanded
+        if self._expanded:
+            self._render_lines(search.value, output)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if "subagent-search" in event.input.classes:
+            self._search = event.value
+            self._block["search"] = event.value
+            self._render_lines(event.value,
+                               self.query_one(".subagent-output", Static))
+
+
 # -- pickers ---------------------------------------------------------------------
 
 class PickerModal(ModalScreen):
@@ -283,5 +385,3 @@ class ConfirmModal(ModalScreen):
 
     def action_refuse(self) -> None:
         self.dismiss(False)
-
-

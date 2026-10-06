@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7 (2026-10-06)
+
+- Add expandable, searchable subagent transcript cards to the TUI and restore subagent activity, conversation history, and usage totals when reopening a session.
+- Require lithe >= 0.1.5 for persisted subagent lifecycle records.
+
+
 ## 0.1.6 (2026-10-06)
 
 The same-agent-parallelism round, riding lithe 0.1.4: a session fanned three

@@ -179,7 +179,7 @@ def test_delegation_renders_live_progress_and_records(tmp_path, capsys):
     # same-agent parallel delegations distinguishable
     assert re.search(r"\[检索员·[0-9a-f]{4}\]", out)
     assert "a.md 的内容是待办清单" in out
-    # per-agent start/end records follow the delegation's tool_result
+    # the plain REPL still renders task lifecycle records after the live output
     assert re.search(r"▸ 检索员·[0-9a-f]{4}：找一下 a\.md 里写了什么", out)
     assert re.search(r"▪ 检索员·[0-9a-f]{4} · 完成", out)
     # the footer carries the delegation footprint
@@ -251,23 +251,62 @@ def test_tui_folds_subagent_events():
 
     state = TuiState("m", "/ws", 5)
     state.on_event({"type": "subagent_start", "agent": "researcher",
-                    "display": "检索员", "task": "查 a.md"})
+                    "display": "检索员", "task": "查 a.md",
+                    "instance": "researcher:a111"})
     state.on_event({"type": "subagent_progress", "agent": "researcher",
-                    "display": "检索员", "event": {
+                    "display": "检索员", "instance": "researcher:a111",
+                    "event": {
                         "type": "tool_call", "name": "read_file",
                         "args": '{"path": "a.md"}'}})
     state.on_event({"type": "subagent_progress", "agent": "researcher",
-                    "display": "检索员", "event": {
+                    "display": "检索员", "instance": "researcher:a111",
+                    "event": {
                         "type": "tool_result", "ok": True,
                         "summary": "读取 a.md"}})
     state.on_event({"type": "subagent_end", "agent": "researcher",
-                    "display": "检索员", "status": "done", "steps": 2,
+                    "display": "检索员", "instance": "researcher:a111",
+                    "status": "done", "steps": 2,
                     "changes": 0, "ok": True})
     state.on_event({"type": "done", "status": "done", "steps": 2,
                     "subagent_delegations": 1, "subagent_cost": 0.01})
+    assert len(state.subagents) == 1
+    block = state.subagents["researcher:a111"]
+    assert block["task"] == "查 a.md"
+    assert block["status"] == "done" and block["steps"] == 2
+    lines = "\n".join(text for _, text in block["lines"])
+    assert "read_file" in lines and "a.md" in lines
+    assert "✓ 读取 a.md" in lines
     feed = "\n".join(text for _, text in state.feed)
-    assert "▸ 检索员：查 a.md" in feed
-    assert "[检索员] ◆ read_file · 读取 a.md" in feed
-    assert "[检索员] ✓ 读取 a.md" in feed
-    assert "▪ 检索员 · 完成 · 2 步" in feed
     assert "委派 1 次" in feed and "子代理花费 $0.0100" in feed
+    assert not any("检索员" in text for _, text in state.feed)
+
+
+def test_tui_subagent_instances_and_history_restore():
+    from lithe_cli.tui import TuiState, transcript_feed_lines
+
+    state = TuiState("m", "/ws", 5)
+    rows = [
+        {"role": "user", "content": "检查 alpha", "subagent": "researcher:a111",
+         "meta": {"subagent_task": {"agent": "researcher", "display": "检索员",
+                                     "task": "检查 alpha", "status": "running"}}},
+        {"role": "assistant", "content": "发现 alpha", "subagent": "researcher:a111"},
+        {"role": "tool", "tool_name": "read_file", "content": "读取 alpha.txt",
+         "subagent": "researcher:a111"},
+        {"role": "assistant", "content": None, "subagent": "researcher:a111",
+         "meta": {"subagent_task": {"agent": "researcher", "display": "检索员",
+                                     "task": "检查 alpha", "status": "done",
+                                     "steps": 2}}},
+        {"role": "user", "content": "检查 beta", "subagent": "researcher:b222",
+         "meta": {"subagent_task": {"agent": "researcher", "display": "检索员",
+                                     "task": "检查 beta", "status": "failed"}}},
+    ]
+    state.feed.extend(transcript_feed_lines(rows))
+    state.restore_subagents(rows)
+    assert len(state.subagents) == 2
+    assert state.subagents["researcher:a111"]["status"] == "done"
+    assert state.subagents["researcher:a111"]["steps"] == 2
+    assert "发现 alpha" in " ".join(
+        text for _, text in state.subagents["researcher:a111"]["lines"]
+    )
+    assert state.subagents["researcher:b222"]["status"] == "failed"
+    assert not any("alpha" in text or "beta" in text for _, text in state.feed)

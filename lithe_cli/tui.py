@@ -26,8 +26,7 @@ import os
 import sys
 import time
 
-from .agent import _agent_label
-from .ui import SUBAGENT_STATUS, fmt_duration, tool_call_label, truncate
+from .ui import fmt_duration, tool_call_label, truncate
 
 _STATUS_DONE = "done"
 
@@ -94,6 +93,9 @@ class TuiState:
         self.max_total_tokens: int | None = None
         self.tools: list[dict] = []
         self.feed: list[tuple[str, str]] = []
+        # One independently searchable transcript per delegation instance.
+        # The kernel already gives each parallel invocation a unique tag.
+        self.subagents: dict[str, dict] = {}
         self.streaming = ""
         self.show_sidebar = True
         self.started: float | None = None
@@ -105,6 +107,67 @@ class TuiState:
     def say(self, cls: str, text: str) -> None:
         lines = str(text).splitlines() or [""]
         self.feed.extend((cls, line) for line in lines)
+        self.invalidate()
+
+    def _subagent(self, instance: str, *, agent: str = "?",
+                  display: str = "", task: str = "") -> dict:
+        """Return/create one delegation card, keyed by its unique instance."""
+        key = str(instance or agent or "unknown")
+        return self.subagents.setdefault(key, {
+            "instance": key, "agent": agent, "display": display or agent,
+            "task": task, "status": "running", "steps": None,
+            "changes": 0, "lines": [], "expanded": False, "search": "",
+        })
+
+    def add_subagent_line(self, instance: str, cls: str, text: str,
+                          **identity) -> None:
+        block = self._subagent(instance, **identity)
+        block["lines"].append((cls, str(text)))
+        self.invalidate()
+
+    def restore_subagents(self, rows: list[dict]) -> None:
+        """Rebuild delegation cards from instance-tagged persisted messages."""
+        self.subagents.clear()
+        for row in rows:
+            instance = str(row.get("subagent") or "")
+            if not instance:
+                continue
+            meta = row.get("meta")
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (ValueError, TypeError):
+                    meta = None
+            task_info = meta.get("subagent_task") if isinstance(meta, dict) else None
+            if isinstance(task_info, dict):
+                self._subagent(
+                    instance, agent=str(task_info.get("agent") or "?"),
+                    display=str(task_info.get("display") or ""),
+                    task=str(task_info.get("task") or ""),
+                ).update({k: task_info[k] for k in
+                          ("status", "steps", "changes") if k in task_info})
+                continue
+            block = self._subagent(instance)
+            role = row.get("role")
+            content = str(row.get("content") or "").strip()
+            if role == "assistant":
+                calls = row.get("tool_calls")
+                if isinstance(calls, str):
+                    try:
+                        calls = json.loads(calls)
+                    except (ValueError, TypeError):
+                        calls = None
+                if isinstance(calls, list):
+                    for call in calls:
+                        fn = call.get("function") if isinstance(call, dict) else None
+                        if isinstance(fn, dict):
+                            name = str(fn.get("name") or "tool")
+                            block["lines"].append(("tool", f"◆ {name}"))
+                if content:
+                    block["lines"].append(("assistant", content))
+            elif role == "tool" and content:
+                name = str(row.get("tool_name") or "工具")
+                block["lines"].append(("dim", f"{name}：{content}"))
         self.invalidate()
 
     def invalidate(self) -> None:
@@ -246,29 +309,33 @@ class TuiState:
             # shows why the model's course changed.
             self.say("user", str(ev.get("text") or ""))
         elif kind == "subagent_start":
-            # Per-delegation record (ToolResult.ui): which worker got what
-            # task — the group's feed line, labeled with the display name
-            # (plus the instance suffix that keeps same-agent parallel
-            # delegations distinguishable).
-            who = _agent_label(ev)
-            task = str(ev.get("task") or "").replace("\n", " ").strip()
-            self.say("tool", f"▸ {who}：{task[:120]}" if task else f"▸ {who}")
+            instance = str(ev.get("instance") or ev.get("agent") or "unknown")
+            block = self._subagent(
+                instance, agent=str(ev.get("agent") or "?"),
+                display=str(ev.get("display") or ""),
+                task=str(ev.get("task") or ""),
+            )
+            block.update({"agent": str(ev.get("agent") or block["agent"]),
+                          "display": str(ev.get("display") or block["display"]),
+                          "task": str(ev.get("task") or block["task"])})
+            self.invalidate()
         elif kind == "subagent_end":
-            who = _agent_label(ev)
+            instance = str(ev.get("instance") or ev.get("agent") or "unknown")
+            block = self._subagent(
+                instance, agent=str(ev.get("agent") or "?"),
+                display=str(ev.get("display") or ""),
+            )
             status = str(ev.get("status") or "")
-            bits = [SUBAGENT_STATUS.get(status, status or "?")]
-            if ev.get("steps") is not None:
-                bits.append(f"{ev['steps']} 步")
-            if ev.get("changes"):
-                bits.append(f"{ev['changes']} 处改动")
-            cls = ("ok" if ev.get("ok")
-                   else "warn" if status == "cancelled" else "err")
-            self.say(cls, f"▪ {who} · " + " · ".join(bits))
+            block.update(status=status or block["status"],
+                         steps=ev.get("steps"), changes=ev.get("changes", 0))
+            self.invalidate()
         elif kind == "subagent_progress":
-            # Live heartbeat (kernel on_subagent_event, wired in
-            # register_subagents): each worker's tool calls and outputs,
-            # prefixed so parallel workers stay distinguishable.
-            who = _agent_label(ev)
+            # Live worker output belongs to its independent instance block.
+            instance = str(ev.get("instance") or ev.get("agent") or "unknown")
+            block = self._subagent(
+                instance, agent=str(ev.get("agent") or "?"),
+                display=str(ev.get("display") or ""),
+            )
             inner = ev.get("event") or {}
             t = inner.get("type")
             if t == "tool_call":
@@ -280,7 +347,10 @@ class TuiState:
                     except (ValueError, TypeError):
                         args = {}
                 args = args if isinstance(args, dict) else {}
-                self.say("tool", f"[{who}] ◆ {tool_call_label(name, args)}")
+                label = f"◆ {tool_call_label(name, args)}"
+                self.add_subagent_line(instance, "tool", label,
+                                       agent=block["agent"],
+                                       display=block["display"])
             elif t == "tool_result":
                 ok = bool(inner.get("ok"))
                 label = str(inner.get("summary") or "").replace("\n", " ")
@@ -290,17 +360,25 @@ class TuiState:
                         label = detail if len(detail) > len(label) else label
                     elif detail:
                         label = f"{label} · {detail}" if label else detail
-                self.say("ok" if ok else "err",
-                         f"[{who}] {'✓' if ok else '✗'} {label}")
+                self.add_subagent_line(instance, "ok" if ok else "err",
+                                       f"{'✓' if ok else '✗'} {label}",
+                                       agent=block["agent"],
+                                       display=block["display"])
             elif t == "assistant":
                 text = str(inner.get("text") or "").replace("\n", " ").strip()
                 if text:
-                    self.say("dim", f"[{who}] {text[:200]}")
+                    self.add_subagent_line(instance, "dim", text[:200],
+                                           agent=block["agent"],
+                                           display=block["display"])
             elif t == "error":
                 msg = str(inner.get("message") or "出错").replace("\n", " ")
-                self.say("err", f"[{who}] {msg[:200]}")
+                self.add_subagent_line(instance, "err", msg[:200],
+                                       agent=block["agent"],
+                                       display=block["display"])
             elif t == "cancelled":
-                self.say("warn", f"[{who}] 已取消")
+                self.add_subagent_line(instance, "warn", "已取消",
+                                       agent=block["agent"],
+                                       display=block["display"])
         elif kind == "done":
             status = str(ev.get("status") or _STATUS_DONE)
             self.last_status = status
@@ -461,6 +539,10 @@ def transcript_feed_lines(rows):
 
     out = []
     for m in rows:
+        # Subagent transcripts are rendered in their instance cards, never
+        # folded into the orchestrator's shared conversation stream.
+        if m.get("subagent"):
+            continue
         role = m.get("role")
         content = (m.get("content") or "").strip()
         if role == "user" and content:

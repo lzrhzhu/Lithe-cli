@@ -29,7 +29,7 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from .clipboard import deliver_clipboard, write_clipboard_file
@@ -45,8 +45,8 @@ from .tui import (
 from .ui import fmt_duration as fmt_duration  # noqa: F401 — legacy re-export
 from . import ttui_widgets as _widgets
 from .ttui_widgets import (
-    ConfirmModal, ConversationPane, HistoryInput, PickerModal, WbEvent,
-    completion_suggestions, selected_text,
+    ConfirmModal, ConversationPane, HistoryInput, PickerModal, SubagentCard,
+    WbEvent, completion_suggestions, selected_text,
 )
 from .ttui_render import footer_text, header_text, sidebar_markup
 
@@ -58,7 +58,13 @@ class LitheApp(App):
     CSS = """
     #top { height: 1; background: #172033; color: #e2e8f0; }
     #body { height: 1fr; }
-    #conv { width: 1fr; border: round #475569; padding: 0 1; }
+    #main-column { width: 1fr; height: 1fr; }
+    #conv { width: 1fr; height: 1fr; border: round #475569; padding: 0 1; }
+    #subagents { height: auto; max-height: 14; overflow-y: auto; }
+    .subagent-card { height: auto; border: round #334155; padding: 0 1; margin: 0 0 1 0; }
+    .subagent-heading { width: 1fr; height: auto; min-height: 1; color: #fbbf24; text-align: left; }
+    .subagent-search { height: 3; margin: 0 0 1 0; }
+    .subagent-output { height: auto; color: #cbd5e1; }
     #side-wrap { width: 44; border: round #475569; padding: 0 1; }
     #prompt { border: round #475569; }
     #foot { height: 1; background: #111827; color: #cbd5e1; }
@@ -95,6 +101,7 @@ class LitheApp(App):
         self.mode = mode
         self.args = args
         self._shown = 0  # feed lines already mounted
+        self._subagent_signature = ()
         self._cancel_asked = False  # first Ctrl+C cancels, second exits
         self._pending_selection = ""  # selection captured at right-click time
 
@@ -103,9 +110,12 @@ class LitheApp(App):
     def compose(self) -> ComposeResult:
         yield Static("", id="top", markup=False)
         with Horizontal(id="body"):
-            with ConversationPane(id="conv"):
-                yield Static("", id="streaming", classes="assistant",
-                             markup=False)
+            with Vertical(id="main-column"):
+                with ConversationPane(id="conv"):
+                    yield Static("", id="streaming", classes="assistant",
+                                 markup=False)
+                with VerticalScroll(id="subagents"):
+                    pass
             with VerticalScroll(id="side-wrap"):
                 yield Static("", id="side", markup=True)
         yield Static("", id="suggest")
@@ -140,7 +150,10 @@ class LitheApp(App):
         self.state = self._base_state(self._current_cid())
         self.states: dict[int, TuiState] = {}
         if self._current_cid() is not None:
-            self.states[self._current_cid()] = self.state
+            cid = self._current_cid()
+            self._load_session_history(self.state, cid)
+            self.states[cid] = self.state
+        self._initial_history_loaded = True
         for cls, text in opening:
             self.state.say(cls, text)
         self.wb.subscribe(
@@ -184,6 +197,34 @@ class LitheApp(App):
         st.max_total_tokens = self.cfg.max_total_tokens
         return st
 
+    def _load_session_history(self, state: TuiState, cid: int) -> None:
+        """Load both the orchestrator feed and subagent cards on first open."""
+        history = self.wb.sessions.transcript(
+            cid, last=0, include_subagents=True
+        )
+        main_rows = [row for row in history if not row.get("subagent")]
+        state.feed.extend(transcript_feed_lines(main_rows[-200:]))
+        state.restore_subagents(history)
+        usage = self.wb.sessions.usage_snapshot(cid)
+        if usage.get("known"):
+            state.input_tokens = usage["prompt_tokens"]
+            state.output_tokens = usage["completion_tokens"]
+            state.cached_tokens = usage["cached_tokens"]
+            state.tokens = usage["total_tokens"]
+        state.cost = usage["cost"]
+
+    def action_refresh_session_history(self) -> None:
+        """Reload durable transcript for the active session."""
+        cid = self._current_cid()
+        if cid is None:
+            return
+        self.state.feed.clear()
+        self.state.subagents.clear()
+        self._load_session_history(self.state, cid)
+        self._shown = 0
+        self._subagent_signature = ()
+        self._sync_feed()
+
     def _refresh_meta(self) -> None:
         st = self.state
         st.model = self.cfg.model or "(scripted)"
@@ -206,16 +247,7 @@ class LitheApp(App):
 
         if cid not in self.states:
             st = self._base_state(cid)
-            st.feed.extend(
-                transcript_feed_lines(self.wb.sessions.transcript(cid))
-            )
-            usage = self.wb.sessions.usage_snapshot(cid)
-            if usage.get("known"):
-                st.input_tokens = usage["prompt_tokens"]
-                st.output_tokens = usage["completion_tokens"]
-                st.cached_tokens = usage["cached_tokens"]
-                st.tokens = usage["total_tokens"]
-            st.cost = usage["cost"]
+            self._load_session_history(st, cid)
             self.states[cid] = st
         # Reload from the conversation's persisted store when returning to it:
         # a background turn or /undo may have changed its todos meanwhile.
@@ -224,6 +256,10 @@ class LitheApp(App):
         ).list()
         self.state = self.states[cid]
         self._shown = 0
+        self._subagent_signature = ()
+        subagents = self.query_one("#subagents", VerticalScroll)
+        for card in list(subagents.children):
+            card.remove()
         conv = self.query_one("#conv", ConversationPane)
         for child in list(conv.children):
             if child.id != "streaming":
@@ -237,6 +273,7 @@ class LitheApp(App):
     def _sync_feed(self) -> None:
         conv = self.query_one("#conv", ConversationPane)
         streaming = self.query_one("#streaming", Static)
+        subagents = self.query_one("#subagents", VerticalScroll)
         # Follow the feed only when the reader is already at (or near) the
         # bottom: scrolling up to re-read earlier output mid-run must stick,
         # not be yanked back to the bottom on every event.
@@ -257,6 +294,31 @@ class LitheApp(App):
             streaming.update(self.state.streaming)
         else:
             streaming.update("")
+        for child in subagents.children:
+            if isinstance(child, SubagentCard):
+                child._block["expanded"] = child._expanded
+                child._block["search"] = child._search
+        signature = tuple(
+            (key, block.get("status"), block.get("task"),
+             bool(block.get("expanded")), str(block.get("search") or ""))
+            for key, block in self.state.subagents.items()
+        )
+        if signature != self._subagent_signature:
+            self._subagent_signature = signature
+            cards = {child.instance: child for child in subagents.children
+                     if isinstance(child, SubagentCard)}
+            for instance, card in cards.items():
+                if instance not in self.state.subagents:
+                    card.remove()
+            for instance, block in self.state.subagents.items():
+                card = cards.get(instance)
+                if card is None:
+                    card = SubagentCard(instance, block)
+                    subagents.mount(card)
+                    card.call_after_refresh(card.set_data, block)
+                else:
+                    card.set_data(block)
+        self.call_after_refresh(self._refresh_subagent_lines)
         if at_bottom:
             conv.scroll_end(animate=False)
             # The pane's extent only grows once the newly mounted lines lay
@@ -265,6 +327,18 @@ class LitheApp(App):
             # of the bottom and the next event's at-bottom check mis-reads
             # "still reading up there" and stops following for good.
             conv.call_after_refresh(conv.scroll_end, animate=False)
+
+    def _refresh_subagent_lines(self) -> None:
+        """Refresh mounted card transcripts after each event, preserving UI."""
+        try:
+            container = self.query_one("#subagents", VerticalScroll)
+        except Exception:
+            return
+        for card in container.children:
+            if isinstance(card, SubagentCard):
+                block = self.state.subagents.get(card.instance)
+                if block is not None:
+                    card.set_data(block)
 
     def _refresh_chrome(self) -> None:
         self.query_one("#top", Static).update(
@@ -295,6 +369,8 @@ class LitheApp(App):
             return
         if t == "session_idle":
             if cid == self._current_cid():
+                if self._initial_history_loaded:
+                    self.action_refresh_session_history()
                 self.state.running = False
                 self.state.stop = None
                 self._cancel_asked = False

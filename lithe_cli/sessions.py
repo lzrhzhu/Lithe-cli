@@ -101,9 +101,16 @@ class SessionManager:
             conversation_id, self.user_id
         )
 
-    def transcript(self, conversation_id: int, last: int = 200) -> list[dict]:
-        """Recent messages for display (TUI rebuild), oldest first."""
-        rows = self.history(conversation_id)
+    def transcript(self, conversation_id: int, last: int = 200, *,
+                   include_subagents: bool = False) -> list[dict]:
+        """Recent messages for display (TUI rebuild), oldest first.
+
+        The default remains the orchestrator-only view used by /copy and
+        existing callers. Rich UIs can request instance-tagged worker rows.
+        """
+        rows = self.store.messages_for_conversation(
+            conversation_id, self.user_id, exclude_subagent=not include_subagents
+        )
         return rows[-last:] if last else rows
 
     def usage_snapshot(self, conversation_id: int) -> dict:
