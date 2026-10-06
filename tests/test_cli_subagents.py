@@ -279,6 +279,12 @@ def test_tui_folds_subagent_events():
     feed = "\n".join(text for _, text in state.feed)
     assert "委派 1 次" in feed and "子代理花费 $0.0100" in feed
     assert not any("检索员" in text for _, text in state.feed)
+    # the live start dropped one position marker into the feed — the pane
+    # mounts the card there, in the conversation's scroll flow
+    from lithe_cli.tui import SUBAGENT_FEED_PREFIX
+
+    assert (SUBAGENT_FEED_PREFIX + "researcher:a111", "") in state.feed
+    assert block["in_feed"] is True
 
 
 def test_tui_subagent_instances_and_history_restore():

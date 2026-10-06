@@ -4,12 +4,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
+
+from .ui import display_width, truncate
 
 # -- input: completion + persistent history ------------------------------------
 
@@ -207,6 +212,14 @@ class SubagentCard(Vertical):
 
     def set_data(self, block: dict) -> None:
         self.update_data(block)
+        try:
+            heading = self.query_one(".subagent-heading", Button)
+        except NoMatches:
+            # The card sits in its parent's children but its compose()
+            # children are not mounted yet — a sibling subagent's event
+            # syncing this card inside that window hit here. The data is
+            # already stored; on_mount re-renders once the card is live.
+            return
         display = str(block.get("display") or block.get("agent") or "子代理")
         suffix = str(block.get("instance") or "").rsplit(":", 1)[-1][:4]
         task = str(block.get("task") or "（任务描述载入中）").replace("\n", " ")
@@ -215,15 +228,25 @@ class SubagentCard(Vertical):
             "running": "运行中", "done": "完成", "max_steps": "步数上限",
             "failed": "失败", "cancelled": "已取消", "budget_exceeded": "预算超限",
         }.get(status, status)
+        status_mark = {
+            "running": "●", "done": "✓", "failed": "✗", "cancelled": "○",
+        }.get(status, "·")
         details = []
         if block.get("steps") is not None:
             details.append(f"{block['steps']} 步")
         if block.get("changes"):
             details.append(f"{block['changes']} 处改动")
         detail = " · " + " · ".join(details) if details else ""
-        heading = self.query_one(".subagent-heading", Button)
-        self._heading = f"{display}·{suffix} · {status_label}{detail} · {task}"
-        heading.label = f"{'▾' if self._expanded else '▸'} {self._heading}"
+        # One collapsed line: identity + status, then the task squeezed into
+        # whatever width remains. The budget is measured on the heading
+        # button itself (the card's rail and padding shrink it) and covers
+        # the arrow prefix, the button's pad and the " · " join, so the
+        # ellipsis — not the pane — ends the line.
+        head = f"{status_mark} {display}·{suffix} · {status_label}{detail}"
+        width = heading.content_size.width or self.content_size.width or 64
+        self._heading = \
+            f"{head} · {truncate(task, max(4, width - display_width(head) - 8))}"
+        heading.label = self.heading_label()
         search = self.query_one(".subagent-search", Input)
         output = self.query_one(".subagent-output", Static)
         if search.value != self._search:
@@ -232,6 +255,12 @@ class SubagentCard(Vertical):
         output.display = self._expanded
         if self._expanded:
             self._render_lines(search.value, output)
+
+    def heading_label(self) -> Content:
+        """The heading as verbatim content — task text is model data, and
+        Button labels parse square-bracket markup (``[/]`` would raise)."""
+        arrow = "▾" if self._expanded else "▸"
+        return Content.from_rich_text(Text(f"{arrow} {self._heading}"))
 
     def refresh_lines(self) -> None:
         """Refresh transcript text without resetting UI-local search state."""
@@ -252,13 +281,20 @@ class SubagentCard(Vertical):
     def on_mount(self) -> None:
         self.set_data(self._block)
 
+    def on_resize(self) -> None:
+        """The one-line heading truncates to the laid-out width, which is
+        still 0 at mount time — re-render once the card has its real size
+        (and again if the terminal is resized)."""
+        if self._block:
+            self.set_data(self._block)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if "subagent-heading" not in event.button.classes:
             return
         self._expanded = not self._expanded
         self._block["expanded"] = self._expanded
         heading = self.query_one(".subagent-heading", Button)
-        heading.label = f"{'▾' if self._expanded else '▸'} {self._heading}"
+        heading.label = self.heading_label()
         search = self.query_one(".subagent-search", Input)
         output = self.query_one(".subagent-output", Static)
         search.display = self._expanded

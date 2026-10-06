@@ -48,6 +48,19 @@ def test_feed_text_scopes_pick_the_right_rows():
     assert "已完成。" not in tools
 
 
+def test_feed_text_skips_subagent_position_markers():
+    """Markers are mounting instructions for the pane, not transcript text:
+    /copy all must lift the conversation without blank marker lines."""
+    from lithe_cli.tui import SUBAGENT_FEED_PREFIX
+
+    feed = [
+        ("user", "分工"),
+        (SUBAGENT_FEED_PREFIX + "researcher:a111", ""),
+        ("assistant", "已完成。"),
+    ]
+    assert feed_text(feed, "all") == "分工\n已完成。"
+
+
 def test_feed_text_last_does_not_walk_into_earlier_answers():
     feed = [
         ("assistant", "第一轮回答"),

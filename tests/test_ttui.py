@@ -396,11 +396,37 @@ async def _settle_bottom(pilot, conv):
             return
 
 
+def test_completed_turn_does_not_duplicate_the_feed(tmp_path):
+    """Regression: session_idle used to reload the store transcript on top
+    of the live-mounted rows, so every finished turn appeared twice."""
+
+    async def scenario():
+        app = _app(tmp_path, WRITE_THEN_ANSWER)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "把 a.txt 写为 hi"
+            await pilot.press("enter")
+            assert await _run_until_done(pilot, app), "turn did not finish"
+            await pilot.pause(0.3)  # let the idle event land
+            conv = app.query_one("#conv")
+            mounted = [str(c.content) for c in conv.children
+                       if c.id != "streaming"]
+            assert len(mounted) == len(set(mounted)), "rows must not double"
+            from lithe_cli.tui import SUBAGENT_FEED_PREFIX
+
+            expected = [text for cls, text in app.state.feed
+                        if not cls.startswith(SUBAGENT_FEED_PREFIX)]
+            assert mounted == expected
+
+    asyncio.run(scenario())
+
+
 def test_subagent_cards_mount_and_search_independently(tmp_path):
     async def scenario():
         app = _app(tmp_path, [])
         async with app.run_test() as pilot:
             state = app.state
+            state.say("user", "先调研再实现")
             state.on_event({"type": "subagent_start", "agent": "researcher",
                             "display": "检索员", "task": "找 alpha",
                             "instance": "researcher:a111"})
@@ -408,6 +434,7 @@ def test_subagent_cards_mount_and_search_independently(tmp_path):
                             "display": "检索员", "instance": "researcher:a111",
                             "event": {"type": "tool_result", "ok": True,
                                       "summary": "发现 alpha.txt"}})
+            state.say("dim", "调研完成，开始实现")
             state.on_event({"type": "subagent_start", "agent": "coder",
                             "display": "编码员", "task": "实现 beta",
                             "instance": "coder:b222"})
@@ -417,11 +444,24 @@ def test_subagent_cards_mount_and_search_independently(tmp_path):
                                       "summary": "修改 beta.py"}})
             app._sync_feed()
             await pilot.pause()
+            conv = app.query_one("#conv")
             cards = list(app.query(SubagentCard))
             assert len(cards) == 2
             assert {card.instance for card in cards} == {
                 "researcher:a111", "coder:b222"
             }
+            # Cards live inside the conversation pane, in chronology with
+            # the feed lines around them — they scroll with the transcript,
+            # not in a region of their own below it.
+            assert all(card.parent is conv for card in cards)
+            kinds = ["user" if c.classes == {"user"} else
+                     "card" if isinstance(c, SubagentCard) else "line"
+                     for c in conv.children if c.id != "streaming"]
+            assert kinds == ["user", "card", "line", "card"]
+            # Collapsed = exactly one row (heading only, no borders/margins)
+            collapsed = next(c for c in cards
+                             if c.instance == "coder:b222")
+            assert collapsed.region.height == 1
             card = next(c for c in cards if c.instance == "researcher:a111")
             card._expanded = True
             card.set_data(state.subagents[card.instance])
@@ -450,6 +490,10 @@ def test_resumed_session_mounts_persisted_subagent_cards(tmp_path):
     wb.store.create_run(run_id, cfg.user_id, "检查项目",
                         conversation_id=cid)
     wb.store.add_message(StoredMessage(
+        role="user", content="开始检查项目", run_id=run_id,
+        user_id=cfg.user_id,
+    ))
+    wb.store.add_message(StoredMessage(
         role="user", content="检查 README", run_id=run_id,
         user_id=cfg.user_id, subagent="researcher:abcd",
         meta={"subagent_task": {"agent": "researcher", "display": "检索员",
@@ -459,6 +503,10 @@ def test_resumed_session_mounts_persisted_subagent_cards(tmp_path):
     wb.store.add_message(StoredMessage(
         role="assistant", content="README 包含使用说明", run_id=run_id,
         user_id=cfg.user_id, subagent="researcher:abcd",
+    ))
+    wb.store.add_message(StoredMessage(
+        role="assistant", content="结论：README 已检查", run_id=run_id,
+        user_id=cfg.user_id,
     ))
     app = LitheApp(cfg, None, "chat",
                    args=SimpleNamespace(resume=str(cid), cont=False, title=None))
@@ -475,6 +523,15 @@ def test_resumed_session_mounts_persisted_subagent_cards(tmp_path):
             assert any("README 包含使用说明" in line
                        for _cls, line in app.state.subagents[card.instance]["lines"])
             assert not any("检查 README" in line for _cls, line in app.state.feed)
+            # The card mounts where the delegation sat in the stored
+            # transcript — between the orchestrator's own rows, not
+            # appended after them.
+            conv = app.query_one("#conv")
+            order = [type(c).__name__ for c in conv.children
+                     if c.id != "streaming"]
+            pos = order.index("SubagentCard")
+            assert 0 < pos < len(order) - 1
+            assert order[pos - 1] == order[pos + 1] == "Static"
 
     asyncio.run(scenario())
 

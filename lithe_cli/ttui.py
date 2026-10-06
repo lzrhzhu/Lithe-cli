@@ -37,6 +37,7 @@ from .config import lithe_home
 from .tui import (
     COPY_SCOPE_LABELS,
     COPY_SCOPES,
+    SUBAGENT_FEED_PREFIX,
     TuiState,
     describe_copy,
     feed_text,
@@ -60,11 +61,15 @@ class LitheApp(App):
     #body { height: 1fr; }
     #main-column { width: 1fr; height: 1fr; }
     #conv { width: 1fr; height: 1fr; border: round #475569; padding: 0 1; }
-    #subagents { height: auto; max-height: 14; overflow-y: auto; }
-    .subagent-card { height: auto; border: round #334155; padding: 0 1; margin: 0 0 1 0; }
-    .subagent-heading { width: 1fr; height: auto; min-height: 1; color: #fbbf24; text-align: left; }
-    .subagent-search { height: 3; margin: 0 0 1 0; }
-    .subagent-output { height: auto; color: #cbd5e1; }
+    /* Subagent cards live inline in the conversation: a one-line heading
+       when collapsed (plus the left rail), search + transcript expanded. */
+    .subagent-card { height: auto; margin: 0 0 1 0; padding: 0 1 0 0;
+                     border-left: round #475569; }
+    .subagent-heading { height: 1; width: 1fr; border: none; min-width: 0;
+                        background: #1b2438; color: #fbbf24;
+                        text-align: left; content-align: left middle; }
+    .subagent-search { height: 3; margin: 0 1 0 1; border: round #334155; }
+    .subagent-output { height: auto; margin: 0 1 0 1; color: #cbd5e1; }
     #side-wrap { width: 44; border: round #475569; padding: 0 1; }
     #prompt { border: round #475569; }
     #foot { height: 1; background: #111827; color: #cbd5e1; }
@@ -101,7 +106,6 @@ class LitheApp(App):
         self.mode = mode
         self.args = args
         self._shown = 0  # feed lines already mounted
-        self._subagent_signature = ()
         self._cancel_asked = False  # first Ctrl+C cancels, second exits
         self._pending_selection = ""  # selection captured at right-click time
 
@@ -114,8 +118,6 @@ class LitheApp(App):
                 with ConversationPane(id="conv"):
                     yield Static("", id="streaming", classes="assistant",
                                  markup=False)
-                with VerticalScroll(id="subagents"):
-                    pass
             with VerticalScroll(id="side-wrap"):
                 yield Static("", id="side", markup=True)
         yield Static("", id="suggest")
@@ -153,7 +155,6 @@ class LitheApp(App):
             cid = self._current_cid()
             self._load_session_history(self.state, cid)
             self.states[cid] = self.state
-        self._initial_history_loaded = True
         for cls, text in opening:
             self.state.say(cls, text)
         self.wb.subscribe(
@@ -198,12 +199,17 @@ class LitheApp(App):
         return st
 
     def _load_session_history(self, state: TuiState, cid: int) -> None:
-        """Load both the orchestrator feed and subagent cards on first open."""
+        """Load both the orchestrator feed and subagent cards on first open.
+
+        The feed is built from the interleaved history in one pass, so each
+        subagent's marker row (and with it its card) sits where the
+        delegation actually happened, not pinned below the conversation.
+        """
         history = self.wb.sessions.transcript(
             cid, last=0, include_subagents=True
         )
-        main_rows = [row for row in history if not row.get("subagent")]
-        state.feed.extend(transcript_feed_lines(main_rows[-200:]))
+        rows = transcript_feed_lines(history)
+        state.feed.extend(rows[-200:])
         state.restore_subagents(history)
         usage = self.wb.sessions.usage_snapshot(cid)
         if usage.get("known"):
@@ -222,7 +228,7 @@ class LitheApp(App):
         self.state.subagents.clear()
         self._load_session_history(self.state, cid)
         self._shown = 0
-        self._subagent_signature = ()
+        self._clear_conversation()
         self._sync_feed()
 
     def _refresh_meta(self) -> None:
@@ -249,31 +255,40 @@ class LitheApp(App):
             st = self._base_state(cid)
             self._load_session_history(st, cid)
             self.states[cid] = st
+            self.state = st
+            self._shown = 0
+            self._clear_conversation()
+            self._sync_feed()
+        else:
+            self.state = self.states[cid]
+            if cid not in self.wb.busy_ids():
+                # Returning to an idle session: rebuild from the persisted
+                # store, because a turn that finished while another session
+                # was active never fed events into this state (and the live
+                # feed keeps transient notices a store rebuild would drop).
+                # A busy session keeps its live cache so the running turn
+                # keeps rendering.
+                self.action_refresh_session_history()
         # Reload from the conversation's persisted store when returning to it:
         # a background turn or /undo may have changed its todos meanwhile.
         self.states[cid].todos = JsonTodoStore(
             todo_store_path(self.cfg, cid)
         ).list()
-        self.state = self.states[cid]
-        self._shown = 0
-        self._subagent_signature = ()
-        subagents = self.query_one("#subagents", VerticalScroll)
-        for card in list(subagents.children):
-            card.remove()
+        self._refresh_meta()
+        self._refresh_chrome()
+
+    def _clear_conversation(self) -> None:
+        """Unmount feed lines and subagent cards, keep the streaming slot."""
         conv = self.query_one("#conv", ConversationPane)
         for child in list(conv.children):
             if child.id != "streaming":
                 child.remove()
-        self._refresh_meta()
-        self._sync_feed()
-        self._refresh_chrome()
 
     # -- conversation rendering (pure render-from-state) ----------------------
 
     def _sync_feed(self) -> None:
         conv = self.query_one("#conv", ConversationPane)
         streaming = self.query_one("#streaming", Static)
-        subagents = self.query_one("#subagents", VerticalScroll)
         # Follow the feed only when the reader is already at (or near) the
         # bottom: scrolling up to re-read earlier output mid-run must stick,
         # not be yanked back to the bottom on every event.
@@ -282,42 +297,38 @@ class LitheApp(App):
         while self._shown < len(feed):
             cls, text = feed[self._shown]
             self._shown += 1
+            if cls.startswith(SUBAGENT_FEED_PREFIX):
+                # A subagent card mounts where the delegation began, so it
+                # scrolls with the conversation instead of squatting in a
+                # fixed region below it. Data refresh rides the pass below.
+                instance = cls[len(SUBAGENT_FEED_PREFIX):]
+                block = self.state.subagents.get(instance)
+                if block is not None:
+                    card = SubagentCard(instance, block)
+                    conv.mount(card, before=streaming)
+                    card.call_after_refresh(card.set_data, block)
+                continue
             # markup=False: model/tool text is data, not Textual markup —
             # a "[x]" in an answer must render, not parse (and it is what
             # /copy sends to the clipboard verbatim).
             conv.mount(Static(text, classes=cls or "dim", markup=False),
                        before=streaming)
+        # Trim the oldest mounted rows, but never a card: a long-running
+        # subagent's block must not vanish mid-flight just because the
+        # orchestrator talked a lot after delegating.
         non_stream = [c for c in conv.children if c.id != "streaming"]
-        for stale in non_stream[:max(0, len(non_stream) - _MAX_FEED)]:
-            stale.remove()
+        stale = [c for c in non_stream[:max(0, len(non_stream) - _MAX_FEED)]
+                 if not isinstance(c, SubagentCard)]
+        for old in stale:
+            old.remove()
         if self.state.streaming:
             streaming.update(self.state.streaming)
         else:
             streaming.update("")
-        for child in subagents.children:
+        for child in conv.children:
             if isinstance(child, SubagentCard):
                 child._block["expanded"] = child._expanded
                 child._block["search"] = child._search
-        signature = tuple(
-            (key, block.get("status"), block.get("task"),
-             bool(block.get("expanded")), str(block.get("search") or ""))
-            for key, block in self.state.subagents.items()
-        )
-        if signature != self._subagent_signature:
-            self._subagent_signature = signature
-            cards = {child.instance: child for child in subagents.children
-                     if isinstance(child, SubagentCard)}
-            for instance, card in cards.items():
-                if instance not in self.state.subagents:
-                    card.remove()
-            for instance, block in self.state.subagents.items():
-                card = cards.get(instance)
-                if card is None:
-                    card = SubagentCard(instance, block)
-                    subagents.mount(card)
-                    card.call_after_refresh(card.set_data, block)
-                else:
-                    card.set_data(block)
         self.call_after_refresh(self._refresh_subagent_lines)
         if at_bottom:
             conv.scroll_end(animate=False)
@@ -331,7 +342,7 @@ class LitheApp(App):
     def _refresh_subagent_lines(self) -> None:
         """Refresh mounted card transcripts after each event, preserving UI."""
         try:
-            container = self.query_one("#subagents", VerticalScroll)
+            container = self.query_one("#conv", ConversationPane)
         except Exception:
             return
         for card in container.children:
@@ -369,8 +380,10 @@ class LitheApp(App):
             return
         if t == "session_idle":
             if cid == self._current_cid():
-                if self._initial_history_loaded:
-                    self.action_refresh_session_history()
+                # No feed rebuild here: the live feed (transient steering
+                # notices, elapsed times, subagent cards) is richer than a
+                # store reload; _activate rebuilds from the store when the
+                # reader returns to the session.
                 self.state.running = False
                 self.state.stop = None
                 self._cancel_asked = False

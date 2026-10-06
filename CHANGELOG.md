@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.9 (2026-10-06)
+
+Subagent cards move into the conversation: they now mount inline where the
+delegation began (a `subagent:<instance>` marker row in the feed), scroll
+with the transcript instead of squatting in a fixed region below it, and a
+collapsed card is exactly one line — status glyph, identity, task truncated
+to the pane width with an ellipsis — behind a slim left rail. The separate
+`#subagents` scroll region is gone.
+
+- **inline cards** — live `subagent_start` drops the marker at the moment
+  of delegation; history rebuilds (`transcript_feed_lines`) emit one marker
+  per instance at its first stored row, so a resumed session shows each
+  card where the subtask actually ran. `/copy` never sees the markers.
+- **compact collapsed card** — the heading is a 1-row `text-align: left`
+  button (no borders/padding) whose label is verbatim `Content` (model task
+  text with `[/]` can no longer raise `MarkupError`), truncated to the
+  heading's own measured width.
+- **no duplicated transcript after a turn** — `session_idle` no longer
+  reloads the store feed on top of the live-mounted rows (every finished
+  turn used to appear twice); the durable rebuild now happens on returning
+  to a session (`_activate`), which also picks up turns that finished while
+  another session was active.
+
+## 0.1.8 (2026-10-06)
+
+Fix a TUI crash when parallel subagents start back to back: the second
+`subagent_start` synced the first card before its `compose()` children were
+in the DOM, and `set_data`'s `query_one(".subagent-heading")` raised
+`NoMatches`. `set_data` now stores the block and returns in that window;
+`on_mount` renders the card once it is live.
+
+- **hardened `SubagentCard.set_data`** — tolerate a mounted-but-not-yet-
+  composed card (the window `_sync_feed`'s deferred first paint was written
+  for, but sibling events could re-enter early); no behavior change once the
+  card is live.
+
 ## 0.1.7 (2026-10-06)
 
 - Add expandable, searchable subagent transcript cards to the TUI and restore subagent activity, conversation history, and usage totals when reopening a session.

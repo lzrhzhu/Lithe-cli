@@ -30,6 +30,12 @@ from .ui import fmt_duration, tool_call_label, truncate
 
 _STATUS_DONE = "done"
 
+# Feed rows whose class starts with this prefix are not text lines but
+# position markers: the conversation pane mounts a subagent card at the
+# marker's place, so the card scrolls with the conversation instead of
+# living in a separate region below it.
+SUBAGENT_FEED_PREFIX = "subagent:"
+
 
 def screen_supported() -> bool:
     """The full-screen UI needs interactive input and output, never pipes
@@ -110,14 +116,27 @@ class TuiState:
         self.invalidate()
 
     def _subagent(self, instance: str, *, agent: str = "?",
-                  display: str = "", task: str = "") -> dict:
-        """Return/create one delegation card, keyed by its unique instance."""
+                  display: str = "", task: str = "",
+                  marker: bool = False) -> dict:
+        """Return/create one delegation card, keyed by its unique instance.
+
+        ``marker=True`` (live events) also drops a ``subagent:<instance>``
+        marker row into the feed — once per instance — so the card mounts
+        at the moment the delegation started. History restore leaves the
+        markers to :func:`transcript_feed_lines`, which walks the stored
+        rows in order.
+        """
         key = str(instance or agent or "unknown")
-        return self.subagents.setdefault(key, {
+        block = self.subagents.setdefault(key, {
             "instance": key, "agent": agent, "display": display or agent,
             "task": task, "status": "running", "steps": None,
             "changes": 0, "lines": [], "expanded": False, "search": "",
+            "in_feed": False,
         })
+        if marker and not block["in_feed"]:
+            block["in_feed"] = True
+            self.feed.append((SUBAGENT_FEED_PREFIX + key, ""))
+        return block
 
     def add_subagent_line(self, instance: str, cls: str, text: str,
                           **identity) -> None:
@@ -126,7 +145,14 @@ class TuiState:
         self.invalidate()
 
     def restore_subagents(self, rows: list[dict]) -> None:
-        """Rebuild delegation cards from instance-tagged persisted messages."""
+        """Rebuild delegation cards from instance-tagged persisted messages.
+
+        Feed markers are NOT appended here: the caller builds the feed from
+        the same rows through :func:`transcript_feed_lines`, which emits one
+        marker per instance at its first row (preserving chronology). The
+        blocks are flagged ``in_feed`` so a later live event for the same
+        instance cannot append a second marker.
+        """
         self.subagents.clear()
         for row in rows:
             instance = str(row.get("subagent") or "")
@@ -146,8 +172,10 @@ class TuiState:
                     task=str(task_info.get("task") or ""),
                 ).update({k: task_info[k] for k in
                           ("status", "steps", "changes") if k in task_info})
+                self.subagents[instance]["in_feed"] = True
                 continue
             block = self._subagent(instance)
+            block["in_feed"] = True
             role = row.get("role")
             content = str(row.get("content") or "").strip()
             if role == "assistant":
@@ -314,6 +342,7 @@ class TuiState:
                 instance, agent=str(ev.get("agent") or "?"),
                 display=str(ev.get("display") or ""),
                 task=str(ev.get("task") or ""),
+                marker=True,
             )
             block.update({"agent": str(ev.get("agent") or block["agent"]),
                           "display": str(ev.get("display") or block["display"]),
@@ -324,6 +353,7 @@ class TuiState:
             block = self._subagent(
                 instance, agent=str(ev.get("agent") or "?"),
                 display=str(ev.get("display") or ""),
+                marker=True,
             )
             status = str(ev.get("status") or "")
             block.update(status=status or block["status"],
@@ -335,6 +365,7 @@ class TuiState:
             block = self._subagent(
                 instance, agent=str(ev.get("agent") or "?"),
                 display=str(ev.get("display") or ""),
+                marker=True,
             )
             inner = ev.get("event") or {}
             t = inner.get("type")
@@ -494,7 +525,8 @@ def feed_text(feed: list[tuple[str, str]], scope: str = "all",
     ``user`` the lines the user typed, ``tools`` the tool call/result
     lines, ``all`` the whole feed. ``extra`` is the text still streaming:
     it is not in the feed yet, which makes it *the* newest answer for
-    ``last`` and a tail to append for ``all``.
+    ``last`` and a tail to append for ``all``. Subagent position markers
+    carry no text and never reach the clipboard.
     """
     extra = str(extra or "").rstrip("\n")
     if scope == "last" and extra.strip():
@@ -506,7 +538,8 @@ def feed_text(feed: list[tuple[str, str]], scope: str = "all",
     elif scope == "last":
         lines = _last_answer(feed)
     else:
-        lines = [text for _cls, text in feed]
+        lines = [text for cls, text in feed
+                 if not cls.startswith(SUBAGENT_FEED_PREFIX)]
     text = "\n".join(lines).strip("\n")
     if extra and scope == "all":
         text = f"{text}\n{extra}".strip("\n")
@@ -534,14 +567,23 @@ def describe_copy(text: str) -> str:
 
 
 def transcript_feed_lines(rows):
-    """Stored session messages -> conversation feed rows (feed rebuild)."""
+    """Stored session messages -> conversation feed rows (feed rebuild).
+
+    A subagent's own rows are rendered in its instance card, never folded
+    into the orchestrator's shared stream; each instance contributes one
+    ``subagent:<instance>`` marker at its first stored row, where the
+    conversation pane mounts that card (chronology preserved).
+    """
     import json as _json
 
     out = []
+    seen_instances: set[str] = set()
     for m in rows:
-        # Subagent transcripts are rendered in their instance cards, never
-        # folded into the orchestrator's shared conversation stream.
-        if m.get("subagent"):
+        instance = str(m.get("subagent") or "")
+        if instance:
+            if instance not in seen_instances:
+                seen_instances.add(instance)
+                out.append((SUBAGENT_FEED_PREFIX + instance, ""))
             continue
         role = m.get("role")
         content = (m.get("content") or "").strip()
