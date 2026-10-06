@@ -342,15 +342,27 @@ def tool_names(cfg: Config) -> list[str]:
     return names
 
 
+def _agent_label(ev: dict) -> str:
+    """Display label for a delegation event: the roster display name, plus
+    the delegation instance's short suffix when present. Same-agent parallel
+    delegations (each its own instance, kernel >= 0.1.4) would otherwise be
+    indistinguishable in the live feed."""
+    who = str(ev.get("display") or ev.get("agent") or "?")
+    inst = str(ev.get("instance") or "")
+    if inst:
+        who = f"{who}·{inst.rsplit(':', 1)[-1][:4]}"
+    return who
+
+
 def _render_subagent_progress(ev: dict) -> None:
-    """Render one live subagent heartbeat: ``[检索员] ⚒ read_file · …``.
+    """Render one live subagent heartbeat: ``[检索员·a3f2] ⚒ read_file · …``.
 
     The kernel's progress hook caps text (300) and dumps ``tool_call`` args
     to a capped JSON string, so parse them back for the label. ``step``
     events are skipped — per-step chatter from every parallel worker is
     noise, the tool lines carry the substance.
     """
-    who = str(ev.get("display") or ev.get("agent") or "?")
+    who = _agent_label(ev)
     tag = ui.s(f"[{who}]", MAGENTA)
     inner = ev.get("event") or {}
     t = inner.get("type")
@@ -449,12 +461,12 @@ def render_event(
     elif t == "subagent_start":
         # Emitted in ToolResult.ui after the delegation finished: the
         # per-agent record of what it was tasked with.
-        who = str(ev.get("display") or ev.get("agent") or "?")
+        who = _agent_label(ev)
         task = str(ev.get("task") or "").replace("\n", " ").strip()
         line = f"{who}：{truncate(task, max(8, ui.width - 14))}" if task else who
         print(f"  {ui.s('▸', MAGENTA)} {ui.s(line, MAGENTA)}")
     elif t == "subagent_end":
-        who = str(ev.get("display") or ev.get("agent") or "?")
+        who = _agent_label(ev)
         status = str(ev.get("status") or "")
         zh = SUBAGENT_STATUS.get(status, status or "?")
         color = (GREEN if status == "done"

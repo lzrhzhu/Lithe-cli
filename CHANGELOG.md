@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 (2026-10-06)
+
+The same-agent-parallelism round, riding lithe 0.1.4: a session fanned three
+read-only review tasks to one `researcher` and they ran serially — the
+parallel delegation tool was only parallel for distinct agents.
+
+- **live labels distinguish parallel instances** — subagent heartbeats,
+  start/end records and TUI feed lines show the delegation instance suffix
+  (``检索员·a3f2``), so several concurrent delegations of the same agent
+  (now possible, kernel >= 0.1.4) stay tellable apart in the terminal.
+- requires lithe >= 0.1.4.
+
 ## 0.1.5 (2026-10-06)
 
 The transient-failure round, from the same session that exposed lithe

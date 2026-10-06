@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from lithe_cli.agent import (
     build_host,
@@ -95,10 +96,12 @@ def test_delegation_runs_and_records_child_messages(tmp_path, capsys):
     assert done["status"] == "done"
     out = capsys.readouterr().out
     assert "子代理已确认" in out
-    # the child's messages are recorded under the run, tagged by subagent id
+    # the child's messages are recorded under the run, tagged with the
+    # delegation instance ("<agent>:<hex8>", kernel >= 0.1.4)
     rows = host.store.messages_for_run(rid, cfg.user_id)
-    tagged = [r for r in rows if r.get("subagent") == "researcher"]
-    assert tagged, "researcher's turns must be recorded with its tag"
+    tagged = [r for r in rows
+              if str(r.get("subagent") or "").startswith("researcher:")]
+    assert tagged, "researcher's turns must be recorded with its instance tag"
     assert any("a.md" in (r.get("content") or "") for r in tagged)
 
 
@@ -172,11 +175,13 @@ def test_delegation_renders_live_progress_and_records(tmp_path, capsys):
     # the parallel call line names the roster and the task count
     assert "researcher（1 项）" in out
     # live heartbeat: the worker's answer, labeled with its display name
-    assert "[检索员]" in out
+    # plus the delegation-instance suffix (kernel >= 0.1.4) that keeps
+    # same-agent parallel delegations distinguishable
+    assert re.search(r"\[检索员·[0-9a-f]{4}\]", out)
     assert "a.md 的内容是待办清单" in out
     # per-agent start/end records follow the delegation's tool_result
-    assert "▸ 检索员：找一下 a.md 里写了什么" in out
-    assert "▪ 检索员 · 完成" in out
+    assert re.search(r"▸ 检索员·[0-9a-f]{4}：找一下 a\.md 里写了什么", out)
+    assert re.search(r"▪ 检索员·[0-9a-f]{4} · 完成", out)
     # the footer carries the delegation footprint
     assert "delegations 1" in out
 

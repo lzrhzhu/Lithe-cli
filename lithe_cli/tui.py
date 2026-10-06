@@ -26,6 +26,7 @@ import os
 import sys
 import time
 
+from .agent import _agent_label
 from .ui import SUBAGENT_STATUS, fmt_duration, tool_call_label, truncate
 
 _STATUS_DONE = "done"
@@ -246,12 +247,14 @@ class TuiState:
             self.say("user", str(ev.get("text") or ""))
         elif kind == "subagent_start":
             # Per-delegation record (ToolResult.ui): which worker got what
-            # task — the group's feed line, labeled with the display name.
-            who = str(ev.get("display") or ev.get("agent") or "?")
+            # task — the group's feed line, labeled with the display name
+            # (plus the instance suffix that keeps same-agent parallel
+            # delegations distinguishable).
+            who = _agent_label(ev)
             task = str(ev.get("task") or "").replace("\n", " ").strip()
             self.say("tool", f"▸ {who}：{task[:120]}" if task else f"▸ {who}")
         elif kind == "subagent_end":
-            who = str(ev.get("display") or ev.get("agent") or "?")
+            who = _agent_label(ev)
             status = str(ev.get("status") or "")
             bits = [SUBAGENT_STATUS.get(status, status or "?")]
             if ev.get("steps") is not None:
@@ -265,7 +268,7 @@ class TuiState:
             # Live heartbeat (kernel on_subagent_event, wired in
             # register_subagents): each worker's tool calls and outputs,
             # prefixed so parallel workers stay distinguishable.
-            who = str(ev.get("display") or ev.get("agent") or "?")
+            who = _agent_label(ev)
             inner = ev.get("event") or {}
             t = inner.get("type")
             if t == "tool_call":
