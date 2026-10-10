@@ -518,9 +518,87 @@ def test_reasoning_save_persists_to_profile(tmp_path, monkeypatch):
     wb.cfg.profile = "zai"
     wb.dispatch("/reasoning high --save")
     assert wb.profiles.endpoint("zai")["reasoning_effort"] == "high"
+
     # off + --save 清除档案字段
     wb.dispatch("/reasoning off --save")
     assert "reasoning_effort" not in wb.profiles.endpoint("zai")
+
+
+# --- F7 端点表单：save_profile / change_profile_provider --------------------------
+
+def _wb_home(tmp_path, monkeypatch, responses=None) -> Workbench:
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    return _wb(tmp_path, responses or [{"content": "ok"}])
+
+
+def test_save_profile_new_switches_immediately(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    r = wb.save_profile("myrouter", "openrouter",
+                        "https://my-router/api/v1", "sk-r",
+                        "vendor/claude-sonnet-4")
+    assert r.messages[0][0] == "ok"
+    assert wb.cfg.profile == "myrouter"
+    assert wb.cfg.provider == "openrouter"
+    assert wb.cfg.base_url == "https://my-router/api/v1"
+    ep = wb.profiles.endpoint("myrouter")
+    assert ep["provider"] == "openrouter"
+    assert ep["model"] == "vendor/claude-sonnet-4"
+
+
+def test_save_profile_edit_current_reapplies(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("cur", "https://old.example/api", "sk", "m")
+    wb.set_profile("cur")
+    r = wb.save_profile("cur", "anthropic",
+                        "https://api.anthropic.com/v1", "sk-ant",
+                        "claude-sonnet-4")
+    assert wb.cfg.provider == "anthropic"
+    assert wb.cfg.base_url == "https://api.anthropic.com/v1"
+    assert wb.cfg.model == "claude-sonnet-4"
+    assert any("下一轮生效" in t for _, t in r.messages)
+
+
+def test_save_profile_none_clears_existing_provider(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("a", "https://a.example/api", "sk", "m", provider="zai")
+    wb.save_profile("a", "none", "https://a.example/api", "sk", "m2")
+    assert "provider" not in wb.profiles.endpoint("a")
+    assert wb.cfg.provider is None
+
+
+def test_save_profile_validation_and_bad_name(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    assert wb.save_profile("", "none", "https://x", "k",
+                           "m").messages[0][0] == "err"
+    assert wb.save_profile("b", "none", "", "k", "m").messages[0][0] == "err"
+    assert wb.save_profile("bad name!", "none", "https://x", "k",
+                           "m").messages[0][0] == "err"
+
+
+def test_change_profile_provider_current_and_clear(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("a", "", "sk", "glm-4.6", provider="zai")
+    wb.set_profile("a")
+    assert wb.cfg.provider == "zai"
+    r = wb.change_profile_provider("a", "Anthropic")
+    assert wb.profiles.endpoint("a")["provider"] == "anthropic"
+    assert wb.cfg.provider == "anthropic"
+    # preset-only 档案切换 provider 后，官方 base_url 跟着换
+    assert wb.cfg.base_url == "https://api.anthropic.com/v1"
+    assert any("下一轮生效" in t for _, t in r.messages)
+    wb.change_profile_provider("a", "off")
+    assert "provider" not in wb.profiles.endpoint("a")
+    assert wb.cfg.provider is None
+    assert wb.change_profile_provider("ghost", "zai").messages[0][0] == "err"
+    assert wb.change_profile_provider("a", "nope").messages[0][0] == "err"
+
+
+def test_switch_to_preset_only_profile_fills_base_url(tmp_path, monkeypatch):
+    """档案只写 provider 不写 base_url：会话内切换不得把端点清空。"""
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("preset-only", "", "sk", "glm-4.6", provider="zai")
+    wb.set_profile("preset-only")
+    assert wb.cfg.base_url == "https://open.bigmodel.cn/api/paas/v4"
 
 
 def test_reasoning_effort_reaches_llm_config(tmp_path):

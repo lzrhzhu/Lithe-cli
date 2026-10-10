@@ -7,7 +7,7 @@ from typing import Any
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
@@ -430,6 +430,196 @@ class PickerModal(ModalScreen):
         row = view.children[index]
         if row.children:
             row.children[0].update(label)
+
+
+# -- forms ------------------------------------------------------------------------
+
+class FormModal(ModalScreen):
+    """A labeled-field form modal (the endpoint editor behind F7).
+
+    Fields are dicts: ``{"name", "label", "kind": "text" | "password" |
+    "choice", "default", "placeholder", "choices"}``. Enter advances to
+    the next field and submits on the last; choice fields cycle their
+    options on Enter or Space; Tab / ↑ / ↓ move between fields; Esc or
+    q cancels. ``on_change(field_name, value)`` fires after every value
+    change so the host can react (the provider field re-defaults
+    base_url to the chosen preset's official URL). Dismissals:
+    ``("submit", values-dict)`` or ``None``.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("q", "cancel", "取消", show=False),
+        Binding("down", "next_field", show=False, priority=True),
+        Binding("up", "prev_field", show=False, priority=True),
+        # Enter is owned by the form, not the widgets: Button's own
+        # two-phase key activation is version-flaky (press every other
+        # key in some builds), so one priority binding dispatches —
+        # choice rows cycle, text rows advance / submit. Mouse clicks
+        # keep the Button.Pressed path.
+        Binding("enter", "enter_key", show=False, priority=True),
+    ]
+
+    def __init__(self, title: str, fields: list[dict], hint: str = "",
+                 on_change: Callable[[str, str], None] | None = None):
+        super().__init__()
+        self.title = title
+        self.fields = fields
+        self.hint = hint
+        self.on_change = on_change
+        self._values: dict[str, str] = {
+            f["name"]: str(f.get("default") or "") for f in fields}
+        self._choices: dict[str, list[str]] = {
+            f["name"]: list(f.get("choices") or [])
+            for f in fields if f.get("kind") == "choice"}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker"):
+            yield Static(self.title, id="picker-title")
+            with Vertical(id="form-fields"):
+                for f in self.fields:
+                    with Horizontal(classes="form-row"):
+                        yield Label(f["label"], classes="form-label")
+                        if f.get("kind") == "choice":
+                            yield Button("", classes="form-choice",
+                                         id=f"form-{f['name']}")
+                        else:
+                            yield Input(
+                                value=self._values[f["name"]],
+                                placeholder=f.get("placeholder") or "",
+                                password=f.get("kind") == "password",
+                                id=f"form-{f['name']}",
+                            )
+            yield Static(self.hint, id="picker-hint")
+
+    def on_mount(self) -> None:
+        self._sync_choice_buttons()
+        if self.fields:
+            self._focus(0)
+
+    # -- field plumbing ---------------------------------------------------------
+
+    def _field_index(self, widget_id: str | None) -> int | None:
+        if not widget_id:
+            return None
+        for i, f in enumerate(self.fields):
+            if f"form-{f['name']}" == widget_id:
+                return i
+        return None
+
+    def _focus(self, index: int) -> None:
+        f = self.fields[index]
+        self.query_one(f"#form-{f['name']}").focus()
+
+    def _sync_choice_buttons(self) -> None:
+        for f in self.fields:
+            if f.get("kind") != "choice":
+                continue
+            btn = self.query_one(f"#form-{f['name']}", Button)
+            value = self._values[f["name"]]
+            btn.label = f"{value} ▸" if value else "（空）"
+
+    def _changed(self, name: str, value: str) -> None:
+        if self.on_change is not None:
+            try:
+                self.on_change(name, value)
+            except Exception:  # noqa: BLE001 — host callbacks must not kill the form
+                pass
+
+    def set_value(self, name: str, value: str) -> None:
+        """Host-side field update (e.g. re-default base_url) — text fields."""
+        f = next((x for x in self.fields if x["name"] == name), None)
+        if f is None or f.get("kind") == "choice":
+            return
+        self._values[name] = value
+        try:
+            self.query_one(f"#form-{name}", Input).value = value
+        except NoMatches:
+            pass
+
+    def values(self) -> dict[str, str]:
+        return dict(self._values)
+
+    # -- events ------------------------------------------------------------------
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        idx = self._field_index(event.input.id)
+        if idx is None:
+            return
+        name = self.fields[idx]["name"]
+        self._values[name] = event.value
+        self._changed(name, event.value)
+        if idx >= len(self.fields) - 1:
+            self.action_submit()
+        else:
+            self._focus(idx + 1)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        idx = self._field_index(event.input.id)
+        if idx is not None:
+            self._values[self.fields[idx]["name"]] = event.value
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Mouse path for choice rows (keyboard goes through
+        :meth:`action_enter_key`)."""
+        idx = self._field_index(event.button.id)
+        if idx is None or self.fields[idx].get("kind") != "choice":
+            return
+        self._cycle_choice(self.fields[idx])
+
+    def _cycle_choice(self, field: dict) -> None:
+        opts = self._choices[field["name"]]
+        cur = self._values[field["name"]]
+        if not opts:
+            return
+        nxt = opts[(opts.index(cur) + 1) % len(opts)] if cur in opts \
+            else opts[0]
+        self._values[field["name"]] = nxt
+        self._sync_choice_buttons()
+        self._changed(field["name"], nxt)
+
+    # -- actions -------------------------------------------------------------------
+
+    def action_enter_key(self) -> None:
+        """One Enter, dispatched by field kind (see BINDINGS note)."""
+        idx = self._field_index(self.focused.id if self.focused else None)
+        if idx is None:
+            return
+        field = self.fields[idx]
+        if field.get("kind") == "choice":
+            self._cycle_choice(field)
+            return
+        value = getattr(self.focused, "value", "") or ""
+        self._values[field["name"]] = value
+        self._changed(field["name"], value)
+        if idx >= len(self.fields) - 1:
+            self.action_submit()
+        else:
+            self._focus(idx + 1)
+
+    def action_next_field(self) -> None:
+        idx = self._field_index(self.focused.id if self.focused else None)
+        if idx is not None and idx < len(self.fields) - 1:
+            self._focus(idx + 1)
+
+    def action_prev_field(self) -> None:
+        idx = self._field_index(self.focused.id if self.focused else None)
+        if idx is not None and idx > 0:
+            self._focus(idx - 1)
+
+    def action_submit(self) -> None:
+        # stop at the first blank required field: the hint names it
+        missing = [f["label"] for f in self.fields
+                   if f.get("kind") != "choice" and f.get("required", True)
+                   and not (self._values.get(f["name"]) or "").strip()]
+        if missing:
+            self.query_one("#picker-hint", Static).update(
+                f"还需填写：{'、'.join(missing)}（Esc 取消）")
+            return
+        self.dismiss(("submit", self.values()))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # -- command approval --------------------------------------------------------

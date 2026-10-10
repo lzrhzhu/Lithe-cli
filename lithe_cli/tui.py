@@ -94,6 +94,13 @@ class TuiState:
         self.context_window = None
         self.context_percent = None
         self.reasoning_effort: str | None = None
+        # Endpoint view for the sidebar's 模型 section (provider preset,
+        # "provider · transport" dialect label, sampling knobs). Set by the
+        # TUI; the plain REPL renders no sidebar.
+        self.provider = ""
+        self.dialect = ""
+        self.temperature: float | None = None
+        self.max_output: int | None = None
         # Run budgets (for the sidebar progress lines); None = no cap.
         self.max_cost: float | None = None
         self.max_total_tokens: int | None = None

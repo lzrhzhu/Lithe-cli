@@ -109,7 +109,7 @@ $ lithe run "总结 README.md 的要点，存到 SUMMARY.md"
 ── done · steps 3 · tokens 2100 · cost 0.0042
 ```
 
-修改已有文件时，助手优先调用 `edit_file` 或 `apply_patch` 做局部更新；只有新建文件或需要整体替换时才使用 `write_file`。工具调用界面只显示工具名、文件路径等摘要，文件写入/编辑的结果带 `+N -M 行` 的行数变化提示（lithe 0.9.10 起由内核统计）。
+修改已有文件时，助手优先调用 `edit_file` 或 `apply_patch` 做局部更新；只有新建文件或需要整体替换时才使用 `write_file`。工具调用界面只显示工具名、文件路径等摘要，文件写入/编辑的结果带 `+N -M 行` 的行数变化提示（lithe 0.1.0 起由内核统计）。
 
 `--stream` streams tokens as they generate; `-v` adds per-call
 usage/context gauges; `--max-steps` caps the tool loop;
@@ -132,7 +132,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 工具/待办、用量:
 
 ```text
- lithe 0.9.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+ lithe 0.2.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
 ╭──────────────────────────────────────╮╭──────────────────────────╮
 │ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
 │ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
@@ -140,19 +140,27 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 │ 已完成。                             ││ F3 切换 · /new 新建      │
 │                                      ││ ◆ 模型                   │
 │                                      ││ zhipu · glm-4.6          │
+│                                      ││ zai · chat · F7 端点     │
 │                                      ││ ◆ 会话用量               │
 │                                      ││ 输入 1,024 · 输出 216    │
 ╰──────────────────────────────────────╯╰──────────────────────────╯
  Tab 采纳 → /model  /models  /new
  lithe ❯ _
- ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · F6 推理 · /help
+ ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · F6 推理 · F7 端点 · /help
 ```
 
 **Switch without leaving the screen**: `F3` opens the session picker
 (`Enter` switch, `n` new, `d` delete, `r` rename), `F4` the model picker
 (grouped by profile; `Enter` switch, `s` save as the profile's default,
-`r` fetch `/models`), and `F5` the settings picker (`Enter` toggles a
-capability; see below). Switching away from a running session does **not**
+`r` fetch `/models`), `F5` the settings picker (`Enter` toggles a
+capability; see below), and `F7` the **endpoint manager** — every saved
+profile with its `provider · transport` dialect, base_url and masked
+key; `Enter` switches, `n` creates a profile right in the form (provider
+type cycled with Enter, base_url defaulting to each preset's official
+URL — overridable for custom routers, star-echoed API key), `e` edits
+one, `p` swaps its provider type. A profile created in the form is
+switched to on save; edits to the current profile apply to the next
+turn. Switching away from a running session does **not**
 cancel it — its badge stays lit and the pane rebuilds from the store when
 you come back. Typing `/` shows matching commands above the prompt (`Tab`
 accepts; `/model`, `/profile`, `/set` complete their arguments too),

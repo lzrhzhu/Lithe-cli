@@ -46,8 +46,9 @@ from .tui import (
 from .ui import fmt_duration as fmt_duration  # noqa: F401 — legacy re-export
 from . import ttui_widgets as _widgets
 from .ttui_widgets import (
-    ConfirmModal, ConversationPane, HistoryInput, PickerModal, SubagentCard,
-    HistoryInputSubmitted, WbEvent, completion_suggestions, selected_text,
+    ConfirmModal, ConversationPane, FormModal, HistoryInput, PickerModal,
+    SubagentCard, HistoryInputSubmitted, WbEvent, completion_suggestions,
+    selected_text,
 )
 from .ttui_render import footer_text, header_text, sidebar_markup
 
@@ -79,6 +80,13 @@ class LitheApp(App):
     #picker-list { height: auto; max-height: 16; }
     #picker-hint { color: #94a3b8; }
     #picker-command { color: #f87171; }
+    #form-fields { height: auto; }
+    .form-row { height: 3; margin: 0 0 1 0; }
+    .form-row Label { width: 11; padding: 0 1 0 0; color: #94a3b8; }
+    .form-row Input { width: 1fr; }
+    Button.form-choice { width: 1fr; height: 3; border: round #334155;
+                         background: #0f172a; color: #e2e8f0; padding: 0 1;
+                         min-width: 0; content-align: left middle; }
     .user { color: #60a5fa; }
     .assistant { color: #4ade80; }
     .tool { color: #22d3ee; }
@@ -95,6 +103,7 @@ class LitheApp(App):
         Binding("f4", "open_model", "模型", priority=True),
         Binding("f5", "open_set", "设置", priority=True),
         Binding("f6", "open_reasoning", "推理", priority=True),
+        Binding("f7", "open_endpoint", "端点", priority=True),
         Binding("ctrl+c", "cancel_or_exit", "取消/退出", priority=True),
     ]
 
@@ -198,7 +207,24 @@ class LitheApp(App):
         )
         st.max_cost = self.cfg.max_cost
         st.max_total_tokens = self.cfg.max_total_tokens
+        self._sync_endpoint_view(st)
         return st
+
+    def _sync_endpoint_view(self, st: TuiState) -> None:
+        """Endpoint display fields for the sidebar's 模型 section."""
+        st.provider = self.cfg.provider or ""
+        st.temperature = self.cfg.temperature
+        st.max_output = self.cfg.max_tokens
+        st.dialect = ""
+        if self.cfg.profile:
+            try:
+                ep = self.wb.profiles.endpoint(self.cfg.profile)
+            except SystemExit:
+                ep = {}
+            st.dialect = self.wb._endpoint_dialect(ep)
+        elif st.provider:
+            st.dialect = self.wb._endpoint_dialect(
+                {"provider": st.provider})
 
     def _load_session_history(self, state: TuiState, cid: int) -> None:
         """Load both the orchestrator feed and subagent cards on first open.
@@ -241,6 +267,7 @@ class LitheApp(App):
         st.max_steps = self.cfg.max_steps
         st.max_cost = self.cfg.max_cost
         st.max_total_tokens = self.cfg.max_total_tokens
+        self._sync_endpoint_view(st)
         if self.wb.current is not None:
             st.session_id = self.wb.current["id"]
             st.session_title = self.wb.current.get("title") or ""
@@ -631,6 +658,38 @@ class LitheApp(App):
                 "Enter 应用 · s 存为档案默认 · Esc 关闭",
                 letter_actions={"s": "_picker_save_reasoning"},
             ), self._reasoning_picked)
+        elif name == "endpoint":
+            from .profiles import masked_key
+            from .ui import truncate
+
+            items = []
+            current = self.cfg.profile
+            for pname in self.wb.profiles.names():
+                try:
+                    ep = self.wb.profiles.endpoint(pname)
+                except SystemExit:
+                    continue
+                mark = "[green]●[/]" if pname == current else " "
+                dialect = self.wb._endpoint_dialect(ep) or "手写端点"
+                url = truncate(ep.get("base_url") or "（preset 补齐）", 34)
+                key = masked_key(ep.get("api_key") or "")
+                items.append((
+                    {"profile": pname},
+                    f"{mark} {pname} · {ep.get('model') or '—'}\n"
+                    f"    [dim]{dialect} · {url} · key {key}[/]",
+                ))
+            if not items:
+                items.append((
+                    {"kind": "head"},
+                    "[dim]（没有已保存档案；n 新建）[/]",
+                ))
+            self.push_screen(PickerModal(
+                "端点档案", items,
+                "Enter 切换 · n 新建 · e 编辑 · p 改 provider · Esc 关闭",
+                letter_actions={"n": "_picker_new_profile",
+                                "e": "_picker_edit_profile",
+                                "p": "_picker_profile_provider"},
+            ), self._endpoint_picked)
 
     def action_open_sessions(self) -> None:
         if self.mode == "chat" and not isinstance(self.screen, PickerModal):
@@ -647,6 +706,134 @@ class LitheApp(App):
     def action_open_reasoning(self) -> None:
         if not isinstance(self.screen, PickerModal):
             self._open_picker("reasoning")
+
+    def action_open_endpoint(self) -> None:
+        if not isinstance(self.screen, PickerModal):
+            self._open_picker("endpoint")
+
+    def _endpoint_picked(self, result) -> None:
+        if not result:
+            return
+        kind = result[0]
+        if kind == "letter" and result[1]:
+            getattr(self, result[1])(result[2])
+            return
+        if kind != "select" or not result[1]:
+            return
+        payload = result[1]
+        if payload.get("kind") == "head":
+            return
+        r = self.wb.set_profile(payload["profile"])
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._refresh_meta()
+        self._refresh_chrome()
+        self._sync_feed()
+
+    # F7 表单：新建/编辑档案
+    def _picker_new_profile(self, payload) -> None:
+        self._open_profile_form(None)
+
+    def _picker_edit_profile(self, payload) -> None:
+        name = (payload or {}).get("profile")
+        self._open_profile_form(name)
+
+    def _open_profile_form(self, edit_name: str | None) -> None:
+        try:
+            from lithe.bundles.providers import PRESETS, known_providers
+        except ImportError:
+            PRESETS, known_providers = {}, []
+        provider_choices = ["none", *known_providers()]
+        preset_urls = {n: p.get("base_url") or ""
+                       for n, p in PRESETS.items()}
+        ep: dict = {}
+        if edit_name:
+            try:
+                ep = self.wb.profiles.endpoint(edit_name)
+            except SystemExit:
+                ep = {}
+
+        def _on_change(field: str, value: str) -> None:
+            if field != "provider":
+                return
+            # provider 换档时：base_url 为空或恰好是另一 preset 的官方
+            # URL → 跟着换成新 preset 的；用户手写的路由不动。
+            try:
+                form = self.screen
+                if not isinstance(form, FormModal):
+                    return
+                current = form.values().get("base_url") or ""
+                if current and current not in preset_urls.values():
+                    return
+                form.set_value("base_url", preset_urls.get(value, ""))
+            except Exception:
+                pass
+
+        fields = [
+            {"name": "profile", "label": "档案名",
+             "kind": "text", "default": edit_name or "",
+             "placeholder": "如 zhipu / my-router"},
+            {"name": "provider", "label": "Provider", "kind": "choice",
+             "choices": provider_choices,
+             "default": ep.get("provider") or "none"},
+            {"name": "base_url", "label": "Base URL",
+             "kind": "text", "default": ep.get("base_url") or "",
+             "placeholder": "自建路由填自己的 URL"},
+            {"name": "api_key", "label": "API key",
+             "kind": "password", "default": ep.get("api_key") or ""},
+            {"name": "model", "label": "模型",
+             "kind": "text", "default": ep.get("model") or "",
+             "placeholder": "如 glm-4.6 / claude-sonnet-4"},
+        ]
+        self.push_screen(FormModal(
+            "新建端点档案" if not edit_name else f"编辑档案 {edit_name}",
+            fields,
+            "Enter 下一项（末项保存）· Provider 行 Enter 换选项 · Esc 取消"
+            " · provider=none 时 base_url 自填",
+            on_change=_on_change,
+        ), self._profile_form_saved)
+
+    def _profile_form_saved(self, result) -> None:
+        if not result or result[0] != "submit":
+            return
+        v = result[1]
+        r = self.wb.save_profile(
+            v.get("profile", ""), v.get("provider", ""),
+            v.get("base_url", ""), v.get("api_key", ""),
+            v.get("model", ""))
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._refresh_meta()
+        self._refresh_chrome()
+        self._sync_feed()
+
+    # F7 › p：快改 provider 类型
+    def _picker_profile_provider(self, payload) -> None:
+        name = (payload or {}).get("profile")
+        if not name:
+            return
+        try:
+            from lithe.bundles.providers import known_providers
+        except ImportError:
+            known_providers = []
+        items = []
+        for choice in ["none", *known_providers()]:
+            label = "none（手写端点）" if choice == "none" else choice
+            items.append(({"provider": choice}, f" {label}"))
+        self.push_screen(PickerModal(
+            f"{name} 的 provider 类型", items,
+            "Enter 应用 · Esc 取消",
+        ), lambda r: self._provider_choice_picked(name, r))
+
+    def _provider_choice_picked(self, name: str, result) -> None:
+        if not result or result[0] != "select" or not result[1]:
+            return
+        r = self.wb.change_profile_provider(name, result[1]["provider"])
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._refresh_meta()
+        self._refresh_chrome()
+        self._sync_feed()
 
     def _reasoning_picked(self, result) -> None:
         if not result or result[0] != "select" or not result[1]:

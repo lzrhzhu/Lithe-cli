@@ -926,7 +926,183 @@ def test_feed_text_is_renderable_verbatim_not_as_markup(tmp_path, copied):
             await pilot.press("enter")
             await pilot.pause()
             assert copied[-1] == answer
+    asyncio.run(scenario())
+
+
+# -- F7 端点管理：表单 + 选择器 ------------------------------------------------------
+
+def test_sidebar_shows_endpoint_dialect_and_footer_f7():
+    state = TuiState("glm-4.6", "/ws", 35, profile="zhipu")
+    state.dialect = "zai · chat"
+    state.temperature = 0.7
+    state.max_output = 8192
+    side = sidebar_markup(state)
+    assert "zai · chat · F7 端点" in side
+    assert "温度 0.7" in side and "输出上限 8,192" in side
+    assert "F7 端点" in footer_text(state)
+    # 无 dialect 时仍有 F7 入口提示
+    state.dialect = ""
+    assert "F7 端点管理" in sidebar_markup(state)
+
+
+def test_form_modal_advances_cycles_and_submits():
+    changes: list = []
+
+    async def scenario():
+        fields = [
+            {"name": "profile", "label": "档案名", "kind": "text"},
+            {"name": "provider", "label": "Provider", "kind": "choice",
+             "choices": ["none", "anthropic", "zai"], "default": "none"},
+            {"name": "base_url", "label": "Base URL", "kind": "text"},
+            {"name": "api_key", "label": "API key", "kind": "password"},
+            {"name": "model", "label": "模型", "kind": "text"},
+        ]
+
+        def on_change(field, value):
+            changes.append((field, value))
+            if field == "provider":
+                form.set_value("base_url", "https://preset.example/v1")
+
+        got: list = []
+        from lithe_cli.ttui_widgets import FormModal
+        from textual.app import App as TextualApp
+
+        class Host(TextualApp):
+            pass
+
+        app = Host()
+        form = FormModal("测试表单", fields, hint="提示", on_change=on_change)
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.push_screen(form, got.append)
+            await pilot.pause()
+            # 档案名 → Provider（Enter 前进）
+            await pilot.press(*"myrouter")
+            await pilot.press("enter")
+            # Provider 行 Enter 循环：none → anthropic，并预填 base_url
+            await pilot.press("enter")
+            assert changes[-1] == ("provider", "anthropic")
+            # base_url 已预填，Tab 跳过 → api_key → model → 末项 Enter 提交
+            await pilot.press("tab")
+            await pilot.press("enter")
+            await pilot.press(*"sk-demo")
+            await pilot.press("enter")
+            await pilot.press(*"glm-4.6")
+            await pilot.press("enter")
+            await pilot.pause()
+        assert got and got[0][0] == "submit"
+        values = got[0][1]
+        assert values["profile"] == "myrouter"
+        assert values["provider"] == "anthropic"
+        assert values["base_url"] == "https://preset.example/v1"
+        assert values["api_key"] == "sk-demo"
+        assert values["model"] == "glm-4.6"
 
     asyncio.run(scenario())
+
+
+def test_form_modal_blocks_blank_required_fields():
+    from lithe_cli.ttui_widgets import FormModal
+    from textual.app import App as TextualApp
+    from textual.widgets import Static as TextStatic
+
+    class Host(TextualApp):
+        pass
+
+    async def scenario():
+        fields = [
+            {"name": "profile", "label": "档案名", "kind": "text"},
+            {"name": "model", "label": "模型", "kind": "text"},
+        ]
+        got: list = []
+        app = Host()
+        form = FormModal("测试表单", fields, hint="提示")
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.push_screen(form, got.append)
+            await pilot.pause()
+            form.action_submit()  # 空表单直接提交：提示缺项，不 dismiss
+            await pilot.pause()
+            assert got == []
+            assert "还需填写" in str(
+                form.query_one("#picker-hint", TextStatic).content)
+            # 填完再提交成功（set_value 同步 _values，直接改 .value 只进 widget）
+            form.set_value("profile", "p")
+            form.set_value("model", "m")
+            form.action_submit()
+            await pilot.pause()
+        assert got and got[0] == ("submit", {"profile": "p", "model": "m"})
+
+    asyncio.run(scenario())
+
+
+def test_f7_endpoint_picker_lists_and_switches(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+
+    async def scenario():
+        app = _app(tmp_path, [{"content": "ok"}])
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.wb.profiles.upsert("a", "https://a.example/api", "sk-a",
+                                   "m-a")
+            app.wb.profiles.upsert("b", "https://b.example/api", "sk-b",
+                                   "m-b", provider="zai")
+            app._refresh_meta()
+            app.action_open_endpoint()
+            await pilot.pause()
+            assert isinstance(app.screen, PickerModal)
+            assert app.screen.title == "端点档案"
+            labels = [label for _payload, label in app.screen.items]
+            assert any("zai · chat" in lab and "m-b" in lab for lab in labels)
+            # 第二行（b）回车 → 切换档案，整套端点真相生效
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.cfg.profile == "b"
+            assert app.cfg.base_url == "https://b.example/api"
+            assert app.cfg.model == "m-b"
+            assert app.state.dialect == "zai · chat"
+
+    asyncio.run(scenario())
+
+
+def test_f7_form_creates_profile_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+
+    async def scenario():
+        app = _app(tmp_path, [{"content": "ok"}])
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.action_open_endpoint()
+            await pilot.pause()
+            # 空档案列表 → n 打开表单
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            from lithe_cli.ttui_widgets import FormModal
+
+            assert isinstance(app.screen, FormModal)
+            form = app.screen
+            await pilot.press(*"myrouter")
+            await pilot.press("enter")        # → Provider
+            # 循环到 openrouter（选择列表按字母序，逐次 Enter 换档）
+            for _ in range(14):
+                if form.values()["provider"] == "openrouter":
+                    break
+                await pilot.press("enter")
+                await pilot.pause()
+            assert form.values()["provider"] == "openrouter"
+            await pilot.press("tab")          # base_url（Tab 全选了预填的官方 URL）
+            base = form.values()["base_url"]
+            assert base == "https://openrouter.ai/api/v1"
+            # 直接键入自己的路由 URL（Tab 进入时全选，输入即整体替换）
+            await pilot.press(*"https://my-router/api/v1")
+            await pilot.press("enter")        # → api_key
+            await pilot.press(*"sk-or")
+            await pilot.press("enter")        # → model
+            await pilot.press(*"vendor/claude-sonnet-4")
+            await pilot.press("enter")        # 末项 → 保存
+            await pilot.pause()
+            assert app.cfg.profile == "myrouter"
+            assert app.cfg.provider == "openrouter"
+            assert app.cfg.base_url == "https://my-router/api/v1"
+            ep = app.wb.profiles.endpoint("myrouter")
+            assert ep["provider"] == "openrouter"
+            assert ep["model"] == "vendor/claude-sonnet-4"
 
     asyncio.run(scenario())

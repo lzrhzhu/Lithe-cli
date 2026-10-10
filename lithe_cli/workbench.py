@@ -173,7 +173,22 @@ class Workbench:
         if "api_key" not in pinned:
             self.cfg.api_key = endpoint.get("api_key")
         if "base_url" not in pinned:
-            self.cfg.base_url = endpoint.get("base_url")
+            base = endpoint.get("base_url")
+            if not base and endpoint.get("provider"):
+                # a preset-only profile stores an empty base_url; the
+                # preset's official URL fills it at adopt time, matching
+                # load_config's layering (switching must not blank the
+                # endpoint the way a raw copy would).
+                try:
+                    from lithe.bundles.providers import get_preset
+                except ImportError:
+                    get_preset = None
+                if get_preset is not None:
+                    try:
+                        base = get_preset(endpoint["provider"]).get("base_url")
+                    except ValueError:
+                        base = None
+            self.cfg.base_url = base
         if endpoint.get("model") and "model" not in pinned:
             self.cfg.model = endpoint["model"]
         if "provider" not in pinned:
@@ -453,6 +468,94 @@ class Workbench:
             "ok", f"档案已切换为 {name}{f'（{dialect}）' if dialect else ''}"
             f" · {self.cfg.model}，下一轮生效"
         )
+        return result
+
+    def save_profile(self, name: str, provider: str, base_url: str,
+                     api_key: str, model: str) -> ActionResult:
+        """Create or overwrite a stored profile from form values (F7 表单).
+
+        A *new* profile is switched to immediately — creating an endpoint
+        in-session means using it now. Overwriting the *current* profile
+        re-adopts its fields so provider/base_url edits take effect on
+        the next turn; other profiles are saved without switching.
+        ``provider == "none"`` (the form's sentinel) stores no preset and
+        explicitly clears one the profile previously had.
+        """
+        result = ActionResult(changed=True)
+        clean = (name or "").strip()
+        provider = (provider or "").strip()
+        provider = "" if provider.lower() in ("", "none", "off") else provider
+        if not clean:
+            result.say("err", "档案名不能为空")
+            return result
+        if not ((base_url or "").strip() and (api_key or "").strip()
+                and (model or "").strip()):
+            result.say("err", "base_url / API key / 模型 均不能为空")
+            return result
+        existed = clean in self.profiles.names()
+        had_provider = None
+        if existed:
+            try:
+                had_provider = self.profiles.endpoint(clean).get("provider")
+            except SystemExit:
+                had_provider = None
+        try:
+            self.profiles.upsert(clean, base_url.strip(), api_key.strip(),
+                                 model.strip(),
+                                 provider=provider or None)
+        except SystemExit as exc:
+            result.say("err", str(exc.code))
+            return result
+        if not provider and had_provider:
+            try:
+                self.profiles.set_provider(clean, None)
+            except ValueError:
+                pass
+        if not existed:
+            switch = self.set_profile(clean)
+            result.messages.extend(switch.messages)
+            return result
+        if clean == self.cfg.profile:
+            try:
+                self._apply_endpoint(self.profiles.endpoint(clean))
+            except SystemExit:
+                pass
+            dialect = self._endpoint_dialect(
+                {"provider": provider or None,
+                 "base_url": base_url.strip()})
+            result.say("ok", f"档案 {clean} 已更新"
+                       f"{'（' + dialect + '）' if dialect else ''}，下一轮生效")
+        else:
+            result.say("ok", f"档案 {clean} 已保存（Enter 可切换）")
+        return result
+
+    def change_profile_provider(self, name: str, provider: str) -> ActionResult:
+        """Swap a stored profile's provider preset (F7 › p).
+
+        ``none``/``off``/empty clears it. When the profile is the current
+        one, its fields are re-adopted so the transport/dialect change
+        applies to the next turn.
+        """
+        result = ActionResult(changed=True)
+        if name not in self.profiles.names():
+            result.say("err", f"未知档案 {name}")
+            return result
+        try:
+            self.profiles.set_provider(name, provider)
+        except ValueError as exc:
+            result.say("err", str(exc))
+            return result
+        raw = (provider or "").strip()
+        if raw.lower() in ("", "none", "off"):
+            result.say("ok", f"档案 {name} 已清除 provider（手写端点）")
+        else:
+            result.say("ok", f"档案 {name} provider → {raw.lower()}")
+        if name == self.cfg.profile:
+            try:
+                self._apply_endpoint(self.profiles.endpoint(name))
+            except SystemExit:
+                pass
+            result.say("dim", "下一轮生效")
         return result
 
     async def fetch_model_list(self, scope: str = "current") -> ActionResult:

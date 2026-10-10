@@ -41,8 +41,19 @@ def sidebar_markup(state: TuiState) -> str:
     out.append("[dim]◆ 模型[/]")
     label = f"{state.profile} · {state.model}" if state.profile else state.model
     out.append(f"[cyan]{label}[/]")
+    if state.dialect:
+        out.append(f"[dim]{state.dialect} · F7 端点[/]")
+    else:
+        out.append("[dim]F7 端点管理[/]")
     if state.reasoning_effort:
         out.append(f"[dim]推理 {state.reasoning_effort} · F6 切换[/]")
+    sampling = []
+    if state.temperature is not None:
+        sampling.append(f"温度 {state.temperature:g}")
+    if state.max_output:
+        sampling.append(f"输出上限 {state.max_output:,}")
+    if sampling:
+        out.append(f"[dim]{' · '.join(sampling)} · /set 调整[/]")
     if state.context_window:
         out.append(f"[dim]窗口 {state.context_window:,} · F4 切换[/]")
     else:
@@ -117,7 +128,7 @@ def footer_text(state: TuiState) -> str:
         live = state.elapsed()
         timer = f" · {fmt_duration(live)}" if live is not None else ""
         return (f" ● {state.status}{timer} · Ctrl+C 取消 · F3 会话"
-                f" · F4 模型 · F6 推理 ")
+                f" · F4 模型 · F6 推理 · F7 端点 ")
     return (f" ● {state.status} · Enter 发送 · Ctrl+Enter 换行 · F2 侧栏"
             f" · F3 会话 · F4 模型"
-            f" · F5 设置 · F6 推理 · /help ")
+            f" · F5 设置 · F6 推理 · F7 端点 · /help ")

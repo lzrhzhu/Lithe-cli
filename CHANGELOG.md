@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.0 (2026-10-10)
+
+The minor bump marks the TUI becoming a complete endpoint console: the
+F7 round (below) plus corrected manual version references.
+
+Endpoint management moves into the TUI, and the manual's version
+references are corrected — the whole 0.9.x line was retired from PyPI
+when the published line renumbered to 0.1.0, so the READMEs were
+pointing at version numbers that no longer exist anywhere.
+
+- **F7 端点管理** — a profile picker listing every saved endpoint with
+  its `provider · transport` dialect, base_url and masked key. Enter
+  switches (full endpoint truth, next turn); `n` opens an in-TUI form
+  (档案名 → provider type cycled with Enter, base_url re-defaulting to
+  each preset's official URL — overridable for custom routers →
+  star-echoed API key → model); `e` edits the focused profile; `p`
+  swaps a profile's provider type in two keystrokes. A newly created
+  profile is switched to on save; edits to the current profile re-adopt
+  its fields, so provider/base_url changes apply to the next turn.
+- **`FormModal`** — a reusable labeled-field modal behind the form:
+  Enter advances (last field submits), choice rows cycle, blank
+  required fields are named in the hint instead of silently blocking.
+  Enter is dispatched by the form itself — Button's two-phase key
+  activation cycles erratically across Textual versions.
+- **sidebar shows the endpoint truth** — the 模型 section gains the
+  `provider · transport` dialect line (with the F7 hint) and the
+  sampling knobs (temperature / output cap, `/set`-adjustable); the
+  footer names F7 alongside F4–F6.
+- **fix: preset-only profiles kept a blank base_url on in-session
+  switches** — `_apply_endpoint` now fills the preset's official URL
+  when the stored profile carries none, matching `load_config`'s
+  layering (switching to a provider-only profile used to blank the
+  endpoint for the rest of the session).
+
 ## 0.1.12 (2026-10-10)
 
 The wizard catches up with providers. `lithe config` was a flat-triple
