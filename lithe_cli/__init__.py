@@ -1,3 +1,3 @@
 """lithe-cli: the command-line interface for the lithe agent kernel."""
 
-__version__ = "0.10.0"
+__version__ = "0.2.1"

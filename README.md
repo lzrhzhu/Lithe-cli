@@ -132,7 +132,7 @@ the conversation; the right sidebar is five fixed sections — 会话（current
 工具/待办、用量:
 
 ```text
- lithe 0.10.0 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
+ lithe 0.2.1 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
 ╭──────────────────────────────────────╮╭──────────────────────────╮
 │ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
 │ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │

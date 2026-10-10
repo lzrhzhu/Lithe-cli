@@ -1,16 +1,14 @@
 # Changelog
 
-## 0.10.0 (2026-10-10)
+## 0.2.1 (2026-10-10)
 
 The minor bump marks the TUI becoming a complete endpoint console: the
 F7 round (below) plus corrected manual version references.
 
 Why not 0.2.0: PyPI permanently retires the numbers of deleted
 releases, and this package's pre-renumber line had already published
-(and later deleted) 0.2.0 — the upload was rejected with
-file-name-reuse. Every 0.2.x–0.9.x number from that retired line is
-presumed taken; 0.10.0 is the first never-used minor (the old line
-stopped at 0.9.x).
+(and later deleted) 0.2.0 — that upload was rejected with
+file-name-reuse, so the round lands on 0.2.1.
 
 Endpoint management moves into the TUI, and the manual's version
 references are corrected — the whole 0.9.x line was retired from PyPI
