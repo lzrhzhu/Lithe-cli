@@ -872,8 +872,8 @@ def test_wizard_saves_and_reports_cancel(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("LITHE_HOME", str(tmp_path))
     monkeypatch.setattr(setup, "stdin_is_interactive", lambda: True)
     answers = iter(
-        ["https://wizard.example/api/v1", "sk-wiz", "glm-4.6"]
-    )  # base_url, key, model
+        ["default", "https://wizard.example/api/v1", "sk-wiz", "glm-4.6"]
+    )  # 档案名, base_url, key, model
     seen_kwargs = []
 
     def fake_ask(label, default="", password=False, validate=None):
@@ -888,6 +888,8 @@ def test_wizard_saves_and_reports_cancel(tmp_path, monkeypatch, capsys):
         return next(answers)
 
     monkeypatch.setattr(prompts, "ask", fake_ask)
+    monkeypatch.setattr(prompts, "choose", lambda label, choices, default="":
+                        "none")
     monkeypatch.setattr(prompts, "yes_no", lambda label, default: False)
     saved = setup.run_setup_wizard()
     assert saved == {
@@ -901,8 +903,9 @@ def test_wizard_saves_and_reports_cancel(tmp_path, monkeypatch, capsys):
 
     assert load_saved_endpoint()["model"] == "glm-4.6"
     # the URL is validated inline and the key is the only password prompt
-    assert seen_kwargs[0]["validate"] is setup._http_like
-    assert [k["password"] for k in seen_kwargs] == [False, True, False]
+    # (question order: 档案名 → provider(choice) → base_url → key → model)
+    assert seen_kwargs[1]["validate"] is setup._http_like
+    assert [k["password"] for k in seen_kwargs] == [False, False, True, False]
 
     # bailing out (Ctrl+D on the first question) returns None, saves nothing
     (tmp_path / "config.json").unlink()

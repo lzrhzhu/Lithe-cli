@@ -108,6 +108,8 @@ class LitheApp(App):
         self._shown = 0  # feed lines already mounted
         self._cancel_asked = False  # first Ctrl+C cancels, second exits
         self._pending_selection = ""  # selection captured at right-click time
+        # model-picker view state: favorites-only filter (letter f)
+        self._model_fav_only = False
 
     # -- composition ----------------------------------------------------------
 
@@ -242,7 +244,20 @@ class LitheApp(App):
         if self.wb.current is not None:
             st.session_id = self.wb.current["id"]
             st.session_title = self.wb.current.get("title") or ""
-        st.model_candidates = self.wb.model_candidates()
+        # completion lane: favorites + recents as qualified refs, then the
+        # current profile's bare model ids; the live model always completes
+        # (env-only endpoints have no profile section to carry it).
+        cands = [
+            f"{e['profile']}:{e['model']}"
+            for e in self.wb.model_entries()
+            if e["section"] in ("fav", "recent")
+        ] + [
+            e["model"] for e in self.wb.model_entries()
+            if e["section"] == "profile" and e["group"] == self.cfg.profile
+        ]
+        if self.cfg.model and self.cfg.model not in cands:
+            cands.insert(0, self.cfg.model)
+        st.model_candidates = cands
         st.profile_names = self.wb.profiles.names()
         st.set_sessions(self.wb.session_list(), self.wb.busy_ids())
 
@@ -529,29 +544,51 @@ class LitheApp(App):
             ), self._sessions_picked)
         elif name == "model":
             items = []
+            entries = self.wb.model_entries(fav_only=self._model_fav_only)
+            section = group = None
             current = self.cfg.profile
-            for profile in ([current] if current else []) + [
-                    p for p in self.wb.profiles.names() if p != current]:
-                ep = self.wb.profiles.endpoint(profile)
-                items.append(({"kind": "head"}, f"[dim]── {profile} ──[/]"))
-                if profile == current:
-                    models = self.wb.model_candidates()
-                else:
-                    models = ([ep["model"]] if ep.get("model") else []) + [
-                        m for m in ep.get("cached_models") or []
-                        if m != ep.get("model")
-                    ]
-                for m in models:
-                    active = profile == current and m == self.cfg.model
-                    items.append((
-                        {"model": m, "profile": profile},
-                        f"{'[green]●[/] ' if active else ' '}{m}",
-                    ))
+            for entry in entries:
+                # fav/recent heads render once per section; profile heads
+                # once per profile group
+                changed = ((entry["section"] != section)
+                           if entry["section"] in ("fav", "recent")
+                           else ((entry["section"], entry["group"])
+                                 != (section, group)))
+                if changed:
+                    section, group = entry["section"], entry["group"]
+                    if section == "fav":
+                        head = "[dim]── ★ 常用 ──[/]"
+                    elif section == "recent":
+                        head = "[dim]── 最近 ──[/]"
+                    else:
+                        try:
+                            ep = self.wb.profiles.endpoint(group)
+                        except SystemExit:
+                            ep = {}
+                        dialect = self.wb._endpoint_dialect(ep)
+                        tag = f"（{dialect}）" if dialect else ""
+                        mark = "▶ " if group == current else ""
+                        head = f"[dim]── {mark}{group}{tag} ──[/]"
+                    items.append(({"kind": "head"}, head))
+                active = (entry["profile"] == current
+                          and entry["model"] == self.cfg.model)
+                star = "★" if entry["favorite"] else " "
+                label = (f"{entry['profile']}:{entry['model']}"
+                         if section in ("fav", "recent") else entry["model"])
+                items.append((
+                    {"model": entry["model"], "profile": entry["profile"]},
+                    f"{'[green]●[/] ' if active else ' '}{star} {label}",
+                ))
+            if not items:
+                items.append(({"kind": "head"},
+                              "[dim]（没有收藏；f 切回全量列表，行内 a 收藏）[/]"))
             self.push_screen(PickerModal(
                 "模型", items,
-                "Enter 切换 · s 存为档案默认 · r 拉取列表 · Esc 关闭",
+                "Enter 切换 · a 收藏 · f 只看收藏 · s 存为默认 · r 拉取 · Esc 关闭",
                 letter_actions={"s": "_picker_save_model",
-                                "r": "_picker_fetch_models"},
+                                "r": "_picker_fetch_models",
+                                "a": "_picker_toggle_fav",
+                                "f": "_picker_fav_filter"},
             ), self._model_picked)
         elif name == "set":
             items = []
@@ -736,6 +773,24 @@ class LitheApp(App):
 
     def _picker_fetch_models(self, payload) -> None:
         asyncio.create_task(self.wb._fetch_and_report())
+
+    def _picker_toggle_fav(self, payload) -> None:
+        """Letter a: star/unstar the focused row, then reopen the picker so
+        the ★ marks (and section membership) refresh in place."""
+        if not payload or payload.get("kind") == "head":
+            return
+        ref = f"{payload['profile']}:{payload['model']}"
+        r = self.wb.fav_command(ref)
+        for cls, text in r.messages:
+            self.state.say(cls, text)
+        self._sync_feed()
+        self._open_picker("model")
+
+    def _picker_fav_filter(self, payload) -> None:
+        """Letter f: collapse the (possibly huge) grouped list to the
+        favorites lane and back."""
+        self._model_fav_only = not self._model_fav_only
+        self._open_picker("model")
 
     # -- copy ----------------------------------------------------------------------
 

@@ -175,6 +175,148 @@ def test_resume_restores_pinned_model_from_meta(tmp_path, monkeypatch):
     assert wb2.cfg.model == "glm-4.5-air"  # session pin restored
 
 
+# --- 多 provider：限定名 / 常用区 / 协议感知 ------------------------------------
+
+def _multi_provider_wb(tmp_path, monkeypatch, responses=None):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))
+    wb = _wb(tmp_path, responses or [])
+    wb.profiles.upsert("zhipu", "https://z.example/api", "sk-z", "glm-4.6",
+                       provider="zai")
+    wb.profiles.upsert("anthropic", "https://api.anthropic.com/v1", "sk-a",
+                       "claude-sonnet-4", provider="anthropic")
+    wb.profiles.cache_models("anthropic", ["claude-sonnet-4", "claude-opus-4"])
+    wb.cfg.profile = "zhipu"
+    wb.cfg.base_url = "https://z.example/api"
+    wb.cfg.api_key = "sk-z"
+    wb.cfg.model = "glm-4.6"
+    wb.cfg.provider = "zai"
+    wb.open()
+    return wb
+
+
+def test_profile_switch_carries_provider_and_dialect(tmp_path, monkeypatch):
+    """切档案 = 整套端点真相：provider/transport 相关字段一起换，
+    不得把上一个厂商的 preset 叠在新端点上。"""
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    r = wb.dispatch("/profile anthropic")
+    assert wb.cfg.provider == "anthropic"
+    assert wb.cfg.base_url == "https://api.anthropic.com/v1"
+    assert wb.cfg.model == "claude-sonnet-4"
+    assert any("anthropic" in t and "messages" in t for _, t in r.messages)
+
+    # 切回 zai：anthropic 的字段不残留
+    wb.dispatch("/profile zhipu")
+    assert wb.cfg.provider == "zai"
+    assert wb.cfg.base_url == "https://z.example/api"
+
+    # env/flag 钉住的 provider 不被会话内切换覆盖
+    wb.cfg.pinned_keys = frozenset({"provider"})
+    wb.cfg.provider = "deepseek"
+    wb.dispatch("/profile anthropic")
+    assert wb.cfg.provider == "deepseek", "钉住的 provider 不得被档案切换改写"
+
+
+def test_model_listing_favorites_first_and_qualified_pick(tmp_path, monkeypatch):
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    wb.profiles.toggle_favorite("anthropic:claude-sonnet-4")
+
+    r = wb.dispatch("/model")
+    lines = [t for _, t in r.messages]
+    # 常用区在最前，条目带限定名；随后是档案分组（当前档案置顶）
+    fav_idx = next(i for i, ln in enumerate(lines) if "★ 常用" in ln)
+    assert "anthropic:claude-sonnet-4" in lines[fav_idx + 1]
+    profile_idx = next(i for i, ln in enumerate(lines)
+                       if ln.startswith(" ") and "glm-4.6" in ln)
+    assert fav_idx < profile_idx
+    assert any("zai · chat" in ln for ln in lines)
+    assert any("anthropic · messages" in ln for ln in lines)
+
+    # 序号选择跨档案：选常用区第 1 条 = 切档案 + 切模型
+    r = wb.dispatch("/model 1")
+    assert wb.cfg.profile == "anthropic"
+    assert wb.cfg.model == "claude-sonnet-4"
+    assert wb.cfg.provider == "anthropic"
+    assert wb.cfg.base_url == "https://api.anthropic.com/v1"
+
+
+def test_model_qualified_ref_switches_profile(tmp_path, monkeypatch):
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    wb.dispatch("/model anthropic:claude-opus-4")
+    assert wb.cfg.profile == "anthropic"
+    assert wb.cfg.model == "claude-opus-4"
+    assert wb.cfg.provider == "anthropic"
+    # 未知前缀不拆分：整串当模型名（自定义端点可用含冒号 id）
+    wb.dispatch("/model weird:name")
+    assert wb.cfg.model == "weird:name"
+    # --save 落在新档案上
+    wb.dispatch("/model anthropic:claude-sonnet-4 --save")
+    assert wb.profiles.endpoint("anthropic")["model"] == "claude-sonnet-4"
+
+
+def test_fav_command_toggle_and_listing(tmp_path, monkeypatch):
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    r = wb.dispatch("/fav")
+    assert any("还没有收藏" in t for _, t in r.messages)
+
+    r = wb.dispatch("/fav anthropic:claude-opus-4")
+    assert any("已收藏" in t for _, t in r.messages)
+    r = wb.dispatch("/fav")
+    assert any("anthropic:claude-opus-4" in t for _, t in r.messages)
+
+    # 再执行一次即取消
+    r = wb.dispatch("/fav anthropic:claude-opus-4")
+    assert any("已取消收藏" in t for _, t in r.messages)
+    assert wb.profiles.favorites() == []
+
+    # 未知档案报错并列出可选项
+    r = wb.dispatch("/fav ghost:m")
+    assert r.messages[0][0] == "err"
+    assert any("zhipu" in t for _, t in r.messages)
+
+
+def test_models_all_fans_out_and_reports_qualified(tmp_path, monkeypatch):
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+
+    import lithe_cli.workbench as workbench_mod
+
+    def fake_fetch(endpoint, timeout=10.0):
+        if endpoint.get("provider") == "anthropic":
+            return ["claude-sonnet-4", "claude-haiku-4"]
+        return ["glm-4.6"]
+
+    monkeypatch.setattr(workbench_mod, "fetch_models_for", fake_fetch)
+    r = asyncio.run(wb.fetch_model_list("all"))
+    lines = [t for _, t in r.messages]
+    # 当前档案（zhipu）先报，全部限定名显示
+    assert lines[0].startswith("zhipu：")
+    assert any("anthropic:claude-haiku-4" in t for t in lines)
+    # 各档案缓存写入
+    assert "claude-haiku-4" in wb.profiles.endpoint("anthropic")["cached_models"]
+
+    # 单档案失败不拖垮整体
+    def flaky(endpoint, timeout=10.0):
+        return None if endpoint.get("provider") == "anthropic" else ["glm-4.6"]
+
+    monkeypatch.setattr(workbench_mod, "fetch_models_for", flaky)
+    r = asyncio.run(wb.fetch_model_list("all"))
+    assert any(t.startswith("✗") for _, t in r.messages)
+    assert any("zhipu：" in t for _, t in r.messages)
+
+
+def test_recent_models_derived_from_sessions(tmp_path, monkeypatch):
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    # open() 种子 meta 携带当前档案/模型 —— 会话将用什么，recents 就有什么
+    assert wb.recent_models() == [("zhipu", "glm-4.6")]
+    wb.dispatch("/model anthropic:claude-opus-4")  # 写入会话 meta
+    recents = wb.recent_models()
+    assert recents[0] == ("anthropic", "claude-opus-4")
+    # 收藏后从最近区移除（不重复出现）
+    wb.profiles.toggle_favorite("anthropic:claude-opus-4")
+    entries = wb.model_entries()
+    assert [e for e in entries if e["model"] == "claude-opus-4"][0][
+        "section"] == "fav"
+
+
 def test_double_submit_rejected_and_events_fan_out(tmp_path):
     wb = _wb(tmp_path, WRITE_THEN_ANSWER)
     wb.open()

@@ -6,9 +6,10 @@ holds keys) grows from the original flat triple to a profile map::
     {
       "version": 2,
       "active": "zhipu",
+      "favorites": ["zhipu:glm-4.6", "anthropic:claude-sonnet-4"],
       "profiles": {
         "zhipu": {"base_url": "...", "api_key": "...", "model": "glm-4.6",
-                   "context_window": 128000, "cached_models": ["glm-4.6"]},
+                  "context_window": 128000, "cached_models": ["glm-4.6"]},
         "openrouter": {"base_url": "...", "api_key": "...", "model": "...",
                         "provider": "openrouter"},
         "selfhost": {"base_url": "https://my-router/api/v1", "api_key": "...",
@@ -22,6 +23,10 @@ left unset — an explicit ``base_url`` always wins, so a self-built router
 speaking the OpenRouter format keeps its own URL. ``document_format``
 overrides the preset's document-block dialect for ``analyze_document``
 (see lithe.bundles.documents).
+
+``favorites`` are qualified model refs (``profile:model``) shown as the
+"常用" section by the model pickers — the quick-switch lane across
+providers. Entries whose profile has been deleted are pruned on load.
 
 A legacy flat ``{api_key, base_url, model}`` file is translated in memory to
 the single profile ``default`` and is never rewritten until an explicit save
@@ -108,6 +113,20 @@ def _clean_endpoint(data: dict) -> dict:
     return out
 
 
+def _clean_favorites(raw: Any, profiles: dict) -> list[str]:
+    """Validated ``profile:model`` refs pointing at live profiles only."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or ":" not in item:
+            continue
+        profile, _, model = item.partition(":")
+        if profile in profiles and model.strip() and item not in out:
+            out.append(item)
+    return out
+
+
 class ProfileStore:
     """Read/modify the profile file; every mutation rewrites it via an
     atomic temp-file replace (the previous version survives as ``.bak``)
@@ -126,24 +145,27 @@ class ProfileStore:
             return None
 
     def load(self) -> dict:
-        """Normalized ``{"active": str | None, "profiles": {name: endpoint}}``.
+        """Normalized ``{"active", "profiles", "favorites"}``.
 
         A corrupt main file falls back to the ``.bak`` left by the last
         atomic save before degrading to empty — a bad edit or a torn write
-        costs the edit, not every saved profile.
+        costs the edit, not every saved profile. Favorites whose profile no
+        longer exists are pruned here, so every read (and the save round
+        trips built on it) never sees ghost entries.
         """
         data = self._read_json(self.path)
         if data is None:
             data = self._read_json(
                 self.path.parent / (self.path.name + ".bak"))
         if data is None or not isinstance(data, dict):
-            return {"active": None, "profiles": {}}
+            return {"active": None, "profiles": {}, "favorites": []}
         if "profiles" not in data:  # legacy flat triple → profile "default"
             endpoint = _clean_endpoint(data)
             if not endpoint:
-                return {"active": None, "profiles": {}}
+                return {"active": None, "profiles": {}, "favorites": []}
             return {"active": DEFAULT_PROFILE,
-                    "profiles": {DEFAULT_PROFILE: endpoint}}
+                    "profiles": {DEFAULT_PROFILE: endpoint},
+                    "favorites": []}
         profiles_raw = data.get("profiles")
         profiles = {}
         if isinstance(profiles_raw, dict):
@@ -156,14 +178,18 @@ class ProfileStore:
         active = data.get("active")
         if active not in profiles:
             active = next(iter(profiles), None)
-        return {"active": active, "profiles": profiles}
+        favorites = _clean_favorites(data.get("favorites"), profiles)
+        return {"active": active, "profiles": profiles,
+                "favorites": favorites}
 
-    def _save(self, active: str | None, profiles: dict) -> Path:
+    def _save(self, data: dict) -> Path:
         fresh_dir = not self.path.parent.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if fresh_dir:
             _restrict_to_owner(self.path.parent, directory=True)
-        payload = {"version": 2, "active": active, "profiles": profiles}
+        payload = {"version": 2, "active": data.get("active"),
+                   "favorites": data.get("favorites") or [],
+                   "profiles": data["profiles"]}
         text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         # Atomic replace: a crash mid-write must never destroy every saved
         # profile (API keys included). The old file survives as .bak for the
@@ -256,13 +282,14 @@ class ProfileStore:
         data["profiles"][name] = {k: v for k, v in endpoint.items() if v}
         if data["active"] is None:
             data["active"] = name
-        return self._save(data["active"], data["profiles"])
+        return self._save(data)
 
     def set_active(self, name: str) -> bool:
         data = self.load()
         if name not in data["profiles"]:
             return False
-        self._save(name, data["profiles"])
+        data["active"] = name
+        self._save(data)
         return True
 
     def set_model(self, name: str, model: str) -> bool:
@@ -270,7 +297,33 @@ class ProfileStore:
         if name not in data["profiles"]:
             return False
         data["profiles"][name]["model"] = model
-        self._save(data["active"], data["profiles"])
+        self._save(data)
+        return True
+
+    def set_provider(self, name: str, provider: str | None) -> bool:
+        """Set (or clear, with None/""/``none``/``off``) a profile's provider.
+
+        An unknown name raises the preset module's :class:`ValueError`
+        (its message lists the available presets) — a typo'd provider
+        must not silently strip the profile's protocol. Returns False
+        only for an unknown *profile* name.
+        """
+        data = self.load()
+        if name not in data["profiles"]:
+            return False
+        endpoint = data["profiles"][name]
+        raw = (provider or "").strip()
+        if not raw or raw.lower() in ("none", "off"):
+            endpoint.pop("provider", None)
+        else:
+            try:
+                from lithe.bundles.providers import get_preset
+            except ImportError:  # kernel not importable in this environment
+                get_preset = None
+            if get_preset is not None:
+                get_preset(raw)  # ValueError on unknown, listing options
+            endpoint["provider"] = raw.lower()
+        self._save(data)
         return True
 
     def set_reasoning_effort(self, name: str, effort: str | None) -> bool:
@@ -283,7 +336,7 @@ class ProfileStore:
             endpoint.pop("reasoning_effort", None)
         else:
             endpoint["reasoning_effort"] = effort.strip()
-        self._save(data["active"], data["profiles"])
+        self._save(data)
         return True
 
     def cache_models(self, name: str, models: list[str]) -> bool:
@@ -291,7 +344,7 @@ class ProfileStore:
         if name not in data["profiles"]:
             return False
         data["profiles"][name]["cached_models"] = list(models)
-        self._save(data["active"], data["profiles"])
+        self._save(data)
         return True
 
     def delete(self, name: str) -> bool:
@@ -301,18 +354,47 @@ class ProfileStore:
         del data["profiles"][name]
         if data["active"] == name:
             data["active"] = next(iter(data["profiles"]), None)
-        self._save(data["active"], data["profiles"])
+        # favorites pointing at the deleted profile die with it
+        data["favorites"] = _clean_favorites(
+            data.get("favorites"), data["profiles"])
+        self._save(data)
         return True
 
+    # -- favorites -------------------------------------------------------------
 
-def fetch_models(base_url: str, api_key: str, timeout: float = 10.0) -> list[str] | None:
-    """GET ``{base_url}/models`` and return the model ids, or None on failure.
+    def favorites(self) -> list[str]:
+        """Qualified ``profile:model`` refs (pruned to live profiles)."""
+        return self.load()["favorites"]
 
-    Never raises: a listing is a convenience, and endpoints legitimately lack
-    ``/models`` or gate it behind different auth.
-    """
-    url = base_url.rstrip("/") + "/models"
-    req = Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    def set_favorites(self, items: list[str]) -> bool:
+        data = self.load()
+        data["favorites"] = _clean_favorites(items, data["profiles"])
+        self._save(data)
+        return True
+
+    def toggle_favorite(self, qualified: str) -> bool | None:
+        """Add/remove a qualified ref. Returns the new state (True = now a
+        favorite), or None when the ref is malformed / its profile is
+        unknown — a typo'd favorite must fail loudly, not save garbage."""
+        profile, _, model = (qualified or "").partition(":")
+        data = self.load()
+        if not model.strip() or profile not in data["profiles"]:
+            return None
+        ref = f"{profile}:{model.strip()}"
+        favs = data["favorites"]
+        if ref in favs:
+            favs.remove(ref)
+            added = False
+        else:
+            favs.append(ref)
+            added = True
+        self._save(data)
+        return added
+
+
+def _fetch_models_url(url: str, headers: dict, timeout: float) -> list[str] | None:
+    """GET *url* and parse ``data[].id`` items; None on any failure."""
+    req = Request(url, headers=headers)
     try:
         with urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
@@ -328,3 +410,63 @@ def fetch_models(base_url: str, api_key: str, timeout: float = 10.0) -> list[str
         elif isinstance(item, str):
             ids.append(item)
     return ids or None
+
+
+def fetch_models(base_url: str, api_key: str, timeout: float = 10.0) -> list[str] | None:
+    """GET ``{base_url}/models`` (Bearer auth) and return the model ids, or
+    None on failure.
+
+    Never raises: a listing is a convenience, and endpoints legitimately lack
+    ``/models`` or gate it behind different auth.
+    """
+    url = base_url.rstrip("/") + "/models"
+    return _fetch_models_url(
+        url, {"Authorization": f"Bearer {api_key}"}, timeout)
+
+
+def models_request(endpoint: dict) -> tuple[str, dict[str, str]] | None:
+    """Protocol-aware ``(url, headers)`` for a GET ``{base_url}/models``.
+
+    The endpoint's provider preset names its transport: a ``messages``
+    endpoint authenticates with ``x-api-key`` + ``anthropic-version``
+    (and takes a ``limit`` so the default 20-model page doesn't silently
+    truncate the list); everything else keeps the OpenAI-style Bearer
+    header. A missing/unknown provider degrades to Bearer; None when the
+    endpoint lacks ``base_url`` / ``api_key``.
+    """
+    base_url = (endpoint.get("base_url") or "").rstrip("/")
+    api_key = endpoint.get("api_key") or ""
+    if not (base_url and api_key):
+        return None
+    url = f"{base_url}/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    provider = endpoint.get("provider")
+    if provider:
+        try:
+            from lithe.bundles.providers import get_preset
+        except ImportError:  # kernel not importable in this environment
+            get_preset = None
+        if get_preset is not None:
+            try:
+                preset = get_preset(provider)
+            except ValueError:
+                preset = None
+            if preset and preset.get("transport") == "messages":
+                url = f"{base_url}/models?limit=1000"
+                headers = {"x-api-key": api_key,
+                           "anthropic-version": "2023-06-01"}
+    return url, headers
+
+
+def fetch_models_for(endpoint: dict, timeout: float = 10.0) -> list[str] | None:
+    """List models for a stored profile with its protocol's own auth
+    (:func:`models_request`). Both flavors answer with the same
+    ``{"data": [{"id": ...}]}`` shape. Never raises: a listing is a
+    convenience, and endpoints legitimately lack ``/models`` or gate it
+    behind different auth — None on failure.
+    """
+    request = models_request(endpoint)
+    if request is None:
+        return None
+    url, headers = request
+    return _fetch_models_url(url, headers, timeout)

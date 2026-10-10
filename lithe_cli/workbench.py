@@ -28,7 +28,7 @@ from lithe.bundles import JsonlRunStore
 from .agent import execute, tool_names, undo
 from .commands import ActionResult, help_text
 from .config import Config
-from .profiles import ProfileStore, fetch_models
+from .profiles import ProfileStore, fetch_models_for
 from .sessions import SessionManager, auto_title, format_session_rows
 from .tui import COPY_SCOPE_HELP, parse_copy_scope
 
@@ -158,6 +158,35 @@ class Workbench:
             self.new_session(title)
         return result
 
+    def _apply_endpoint(self, endpoint: dict) -> None:
+        """Adopt a stored profile's fields onto ``cfg`` (endpoint truth).
+
+        The pinnable endpoint keys (api_key / base_url / model / provider)
+        respect ``pinned_keys``; everything else the profile carries
+        (dialect knobs, extra_body, pricing, ...) is copied verbatim and
+        reset to None when the profile doesn't set it — switching profiles
+        means switching truths, not layering one vendor's fields over
+        another's endpoint. A profile without a model keeps the current
+        one (upsert always saves one, but hand-edited files may not).
+        """
+        pinned = self.cfg.pinned_keys
+        if "api_key" not in pinned:
+            self.cfg.api_key = endpoint.get("api_key")
+        if "base_url" not in pinned:
+            self.cfg.base_url = endpoint.get("base_url")
+        if endpoint.get("model") and "model" not in pinned:
+            self.cfg.model = endpoint["model"]
+        if "provider" not in pinned:
+            self.cfg.provider = endpoint.get("provider")
+        self.cfg.document_format = endpoint.get("document_format")
+        self.cfg.reasoning_effort = endpoint.get("reasoning_effort")
+        self.cfg.context_window = endpoint.get("context_window")
+        self.cfg.temperature = endpoint.get("temperature")
+        self.cfg.max_tokens = endpoint.get("max_tokens")
+        self.cfg.extra_body = endpoint.get("extra_body")
+        self.cfg.default_headers = endpoint.get("default_headers")
+        self.cfg.pricing = endpoint.get("pricing")
+
     def sync_session_pin(self) -> None:
         """A resumed session remembers its model/profile unless pinned.
 
@@ -172,19 +201,10 @@ class Workbench:
         if meta.get("profile") and "profile" not in pinned:
             endpoint = self.profiles.endpoint(meta["profile"])  # may be gone
             if endpoint:
-                if "api_key" not in pinned and endpoint.get("api_key"):
-                    self.cfg.api_key = endpoint["api_key"]
-                if "base_url" not in pinned and endpoint.get("base_url"):
-                    self.cfg.base_url = endpoint["base_url"]
-                if endpoint.get("context_window") and not self.cfg.context_window:
-                    self.cfg.context_window = endpoint["context_window"]
+                self._apply_endpoint(endpoint)
                 self.cfg.profile = meta["profile"]
         if meta.get("model") and "model" not in pinned:
             self.cfg.model = meta["model"]
-        elif self.cfg.profile and "model" not in pinned:
-            endpoint = self.profiles.endpoint(self.cfg.profile)
-            if endpoint.get("model"):
-                self.cfg.model = endpoint["model"]
 
     def switch_session(self, ident: str) -> ActionResult:
         result = ActionResult(changed=True)
@@ -234,36 +254,133 @@ class Workbench:
 
     # -- model / profile --------------------------------------------------------
 
-    def model_candidates(self) -> list[str]:
-        """Ordered unique models for the effective profile: current first,
-        then the profile's cached /models list."""
-        ep = {}
-        if self.cfg.profile:
+    def _endpoint_dialect(self, endpoint: dict) -> str:
+        """``"zai · chat"``-style label for listings; "" when unknown.
+
+        Provider comes from the profile field; a profile without one gets a
+        display-only inference from matching a preset's base_url — shown,
+        never written back (an inference is not truth).
+        """
+        provider, transport = endpoint.get("provider"), None
+        try:
+            from lithe.bundles.providers import PRESETS, get_preset
+        except ImportError:
+            return ""
+        if provider:
             try:
-                ep = self.profiles.endpoint(self.cfg.profile)
+                transport = get_preset(provider).get("transport")
+            except ValueError:
+                return f"{provider}（未知 preset）"
+        else:
+            for name, preset in PRESETS.items():
+                if preset.get("base_url") and \
+                        preset["base_url"] == endpoint.get("base_url"):
+                    provider, transport = name, preset.get("transport")
+                    break
+        if not provider:
+            return ""
+        return f"{provider} · {transport}" if transport else provider
+
+    def recent_models(self, limit: int = 5) -> list[tuple[str, str]]:
+        """Distinct ``(profile, model)`` pairs by session recency.
+
+        Derived from conversation meta on the fly — zero sidecar state; the
+        models a user actually switched through are exactly what they want
+        one keystroke away.
+        """
+        seen: set[tuple[str, str]] = set()
+        out: list[tuple[str, str]] = []
+        for row in self.sessions.list(limit=50):
+            meta = row.get("meta") or {}
+            pair = (meta.get("profile"), meta.get("model"))
+            if pair[0] and pair[1] and pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+        return out[:limit]
+
+    def model_entries(self, *, fav_only: bool = False) -> list[dict]:
+        """Ordered picker entries across every saved profile.
+
+        Sections: ★常用 (favorites, qualified) → 最近 (recents not already
+        favorited) → one group per profile (current first, its saved model
+        + cached list). Each entry carries ``{profile, model, section,
+        group, favorite}`` — ``section`` is the section kind
+        (``fav``/``recent``/``profile``), ``group`` the header it renders
+        under (profile name). Numbering follows this order, so the
+        favorites are always the first few numbers — the whole point of
+        the quick lane.
+        """
+        favorites = set(self.profiles.favorites())
+        entries: list[dict] = []
+        listed: set[tuple[str, str]] = set()
+
+        def _add(profile: str, model: str, section: str) -> None:
+            pair = (profile, model)
+            if pair in listed:
+                return
+            listed.add(pair)
+            entries.append({"profile": profile, "model": model,
+                            "section": section, "group": profile,
+                            "favorite": f"{profile}:{model}" in favorites})
+
+        for ref in favorites:
+            profile, _, model = ref.partition(":")
+            _add(profile, model, "fav")
+        if fav_only:
+            return entries
+        current_pair = (self.cfg.profile, self.cfg.model)
+        for pair in self.recent_models():
+            if f"{pair[0]}:{pair[1]}" in favorites:
+                continue
+            if pair == current_pair:
+                # the current model renders under its own profile group (●);
+                # duplicating it in 最近 would also swallow that group's
+                # only entry — and with it the group header.
+                continue
+            _add(pair[0], pair[1], "recent")
+        current = self.cfg.profile
+        names = [current] if current else []
+        names += [n for n in self.profiles.names() if n != current]
+        for name in names:
+            try:
+                ep = self.profiles.endpoint(name)
             except SystemExit:
-                ep = {}
-        models: list[str] = []
-        if self.cfg.model:
-            models.append(self.cfg.model)
-        for name in ep.get("cached_models") or []:
-            if name not in models:
-                models.append(name)
-        return models
+                continue
+            if ep.get("model"):
+                _add(name, ep["model"], "profile")
+            for m in ep.get("cached_models") or []:
+                _add(name, m, "profile")
+        return entries
 
     def set_model(self, arg: str, *, save: bool = False) -> ActionResult:
         result = ActionResult(changed=True)
         if self.cfg.pinned_keys and "model" in self.cfg.pinned_keys:
             result.say("warn", "模型由 flag/环境变量钉住，本次运行不切换")
             return result
-        candidates = self.model_candidates()
         name = arg.strip()
+        # Qualified ref "profile:model": profile names cannot contain ":"
+        # (model ids can — OpenRouter's "vendor/model"), so the first colon
+        # splits unambiguously. An unknown prefix falls through as a bare
+        # model name (custom endpoints may use colon-y ids).
+        if name and ":" in name:
+            prefix, _, rest = name.partition(":")
+            if prefix in self.profiles.names() and rest:
+                switch = self.set_profile(prefix)
+                if switch.messages and switch.messages[0][0] == "err":
+                    return switch
+                result.messages.extend(switch.messages)
+                name = rest
         if name.isdigit():
             idx = int(name) - 1
-            if 0 <= idx < len(candidates):
-                name = candidates[idx]
+            entries = self.model_entries()
+            if 0 <= idx < len(entries):
+                entry = entries[idx]
+                if entry["profile"] != self.cfg.profile:
+                    switch = self.set_profile(entry["profile"])
+                    result.messages.extend(switch.messages)
+                name = entry["model"]
             else:
-                result.say("err", f"序号超出范围（1–{len(candidates)}）")
+                result.say("err", f"序号超出范围（1–{len(entries)}）")
                 return result
         if not name:
             result.say("err", "缺少模型名")
@@ -322,33 +439,67 @@ class Workbench:
         except SystemExit as exc:
             result.say("err", str(exc.code))
             return result
-        pinned = self.cfg.pinned_keys
-        if "api_key" not in pinned and endpoint.get("api_key"):
-            self.cfg.api_key = endpoint["api_key"]
-        if "base_url" not in pinned and endpoint.get("base_url"):
-            self.cfg.base_url = endpoint["base_url"]
-        if "model" not in pinned and endpoint.get("model"):
-            self.cfg.model = endpoint["model"]
-        if endpoint.get("context_window"):
-            self.cfg.context_window = endpoint["context_window"]
+        # Full endpoint truth: credentials + provider/dialect fields switch
+        # together — swapping base_url while keeping the old provider's
+        # preset would layer one vendor's transport over another's endpoint.
+        self._apply_endpoint(endpoint)
         self.cfg.profile = name
         if self.current is not None:
             self.sessions.set_meta(
                 self.current["id"], {"profile": name, "model": self.cfg.model}
             )
+        dialect = self._endpoint_dialect(endpoint)
         result.say(
-            "ok", f"档案已切换为 {name} · {self.cfg.model}，下一轮生效"
+            "ok", f"档案已切换为 {name}{f'（{dialect}）' if dialect else ''}"
+            f" · {self.cfg.model}，下一轮生效"
         )
         return result
 
-    async def fetch_model_list(self) -> ActionResult:
-        """GET /models on the effective endpoint; cache into the profile."""
+    async def fetch_model_list(self, scope: str = "current") -> ActionResult:
+        """Fetch ``/models`` per protocol (see ``fetch_models_for``).
+
+        ``current`` hits the effective endpoint; ``all`` fans out to every
+        saved profile in parallel, caching each — the collision-safe
+        cross-provider view: every model is displayed (and favoritable)
+        as a qualified ``profile:model`` ref.
+        """
         result = ActionResult(changed=True)
+        if scope == "all":
+            names = self.profiles.names()
+            if not names:
+                result.say("warn", "没有已保存档案（lithe-cli config 配置）")
+                return result
+            pairs = []
+            for name in names:
+                try:
+                    ep = self.profiles.endpoint(name)
+                except SystemExit:
+                    continue
+                pairs.append((name, ep))
+            # current profile first, the rest in saved order — the gather
+            # list and the report loop must walk the same sequence.
+            current = self.cfg.profile
+            pairs.sort(key=lambda ne: ne[0] != current)
+            fetched = await asyncio.gather(*[
+                asyncio.to_thread(fetch_models_for, ep) for _name, ep in pairs
+            ])
+            for (name, _ep), models in zip(pairs, fetched, strict=True):
+                if not models:
+                    result.say("warn", f"✗ {name} 拉取失败或为空")
+                    continue
+                self.profiles.cache_models(name, models)
+                preview = "、".join(f"{name}:{m}" for m in models[:6])
+                more = f" …（共 {len(models)} 个）" if len(models) > 6 else ""
+                result.say("ok", f"{name}：{preview}{more}")
+            return result
         base_url, api_key = self.cfg.base_url, self.cfg.api_key
+        provider = self.cfg.provider
         if not (base_url and api_key):
             result.say("err", "当前没有可用的 base_url/api_key")
             return result
-        models = await asyncio.to_thread(fetch_models, base_url, api_key)
+        endpoint = {"base_url": base_url, "api_key": api_key,
+                    "provider": provider}
+        models = await asyncio.to_thread(fetch_models_for, endpoint)
         if not models:
             result.say("warn", f"拉取失败或为空（{base_url}/models）")
             return result
@@ -667,21 +818,56 @@ class Workbench:
             return result
         if cmd == "model":
             if not arg:
-                models = self.model_candidates()
+                entries = self.model_entries()
                 result.say("dim", f"当前：{self.cfg.profile or 'env'} · {self.cfg.model}")
-                for i, name in enumerate(models, 1):
-                    mark = "●" if name == self.cfg.model else " "
-                    result.say("dim", f" {mark} {i}. {name}")
-                result.say("dim", "（/model 名称 或 /model 序号；--save 存为档案默认）")
+                section = group = None
+                for i, entry in enumerate(entries, 1):
+                    # fav/recent heads render once per section; profile
+                    # heads once per profile group
+                    changed = ((entry["section"] != section)
+                               if entry["section"] in ("fav", "recent")
+                               else ((entry["section"], entry["group"])
+                                     != (section, group)))
+                    if changed:
+                        section, group = entry["section"], entry["group"]
+                        if section == "fav":
+                            result.say("dim", "── ★ 常用 ──")
+                        elif section == "recent":
+                            result.say("dim", "── 最近 ──")
+                        else:
+                            try:
+                                ep = self.profiles.endpoint(group)
+                            except SystemExit:
+                                ep = {}
+                            dialect = self._endpoint_dialect(ep)
+                            tag = f"（{dialect}）" if dialect else ""
+                            result.say("dim", f"── {group}{tag} ──")
+                    active = (entry["profile"] == self.cfg.profile
+                              and entry["model"] == self.cfg.model)
+                    mark = "●" if active else " "
+                    star = "★" if entry["favorite"] else " "
+                    label = (f"{entry['profile']}:{entry['model']}"
+                             if section in ("fav", "recent")
+                             else entry["model"])
+                    result.say("dim", f" {mark} {i}. {star}{label}")
+                if not any(e["section"] == "fav" for e in entries):
+                    result.say("dim", "（/fav 档案:模型 收藏常用，列表顶部直达）")
+                result.say("dim", "（/model 名称 或 档案:模型 或 序号；--save 存为档案默认）")
                 result.overlay = "model"
                 return result
             save = "--save" in arg
             name = arg.replace("--save", "").strip()
             return self.set_model(name, save=save)
         if cmd == "models":
-            result.say("dim", f"正在从 {self.cfg.base_url} 拉取模型列表…")
-            result.awaitable = self._fetch_and_report
+            scope = "all" if arg.strip().lower() == "all" else "current"
+            if scope == "all":
+                result.say("dim", "正在并行拉取全部档案的模型列表…")
+            else:
+                result.say("dim", f"正在从 {self.cfg.base_url} 拉取模型列表…")
+            result.awaitable = (lambda: self._fetch_and_report(scope))
             return result
+        if cmd == "fav":
+            return self.fav_command(arg)
         if cmd == "profile":
             if not arg:
                 names = self.profiles.names()
@@ -691,12 +877,15 @@ class Workbench:
                 for name in names:
                     mark = "*" if name == self.cfg.profile else " "
                     ep = self.profiles.masked(name)
+                    dialect = self._endpoint_dialect(ep)
+                    suffix = f"（{dialect} · key {ep.get('api_key')}）" \
+                        if dialect else f"（key {ep.get('api_key')}）"
                     result.say(
                         "dim",
                         f"{mark} {name} · {ep.get('model')} @ {ep.get('base_url')}"
-                        f"（key {ep.get('api_key')}）",
+                        f"{suffix}",
                     )
-                result.say("dim", "（/profile 名称 切换）")
+                result.say("dim", "（/profile 名称 切换；provider/协议为 preset 推断，仅供识别）")
                 return result
             return self.set_profile(arg)
         if cmd == "undo":
@@ -736,8 +925,43 @@ class Workbench:
         result.say("err", f"未知命令 /{cmd}（/help 查看可用命令）")
         return result
 
-    async def _fetch_and_report(self) -> None:
-        res = await self.fetch_model_list()
+    def fav_command(self, arg: str) -> ActionResult:
+        """``/fav`` — the quick-switch lane across providers.
+
+        Bare: list favorites as qualified refs (the same strings the ★
+        section of ``/model`` numbers first). With a ``profile:model`` ref:
+        toggle. The ref must name a saved profile — a typo'd favorite is an
+        error, not silent garbage in the config.
+        """
+        result = ActionResult()
+        arg = arg.strip()
+        if not arg:
+            favs = self.profiles.favorites()
+            if not favs:
+                result.say("dim", "还没有收藏（/fav 档案:模型 或选择器内 a 键收藏）")
+                return result
+            for i, ref in enumerate(favs, 1):
+                profile, _, model = ref.partition(":")
+                active = profile == self.cfg.profile and model == self.cfg.model
+                result.say("dim",
+                           f" {'●' if active else ' '} {i}. {ref}")
+            result.say("dim", "（/model 序号直达；/fav 档案:模型 再执行一次即取消）")
+            return result
+        state = self.profiles.toggle_favorite(arg)
+        if state is None:
+            known = "、".join(self.profiles.names()) or "（无）"
+            result.say("err", f"{arg!r} 不是可收藏的引用（用 档案:模型；"
+                              f"已存档案：{known}）")
+            return result
+        profile, _, model = arg.partition(":")
+        if state:
+            result.say("ok", f"已收藏 {profile}:{model.strip()}（/model 列表顶部直达）")
+        else:
+            result.say("dim", f"已取消收藏 {profile}:{model.strip()}")
+        return result
+
+    async def _fetch_and_report(self, scope: str = "current") -> None:
+        res = await self.fetch_model_list(scope)
         cid = self._cid() or -1
         for cls, text in res.messages:
             self._emit(cid, {"type": "command_output", "style": cls,

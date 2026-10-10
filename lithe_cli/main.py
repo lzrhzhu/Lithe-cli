@@ -338,6 +338,22 @@ def _cmd_config(args: Any) -> int:
         store.set_model(active, args.model)
         print(ui.s(f"✓ 档案 {active} 默认模型 → {args.model}", GREEN))
         return 0
+    if args.provider:
+        active = store.active_name()
+        if not active:
+            print(ui.s("没有已保存档案，先运行 lithe-cli config。", RED))
+            return 1
+        try:
+            store.set_provider(active, args.provider)
+        except ValueError as exc:
+            print(ui.s(str(exc), RED))
+            return 1
+        raw = args.provider.strip().lower()
+        if raw in ("", "none", "off"):
+            print(ui.s(f"✓ 档案 {active} 已清除 provider", GREEN))
+        else:
+            print(ui.s(f"✓ 档案 {active} provider → {args.provider}", GREEN))
+        return 0
 
     saved = load_saved_endpoint()
     if args.show:

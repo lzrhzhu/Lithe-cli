@@ -26,6 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--base-url", help="endpoint base URL (env LITHE_BASE_URL)")
         sp.add_argument("--model", help="model name (env LITHE_MODEL)")
         sp.add_argument(
+            "--provider",
+            help="vendor preset (openai/anthropic/zai/deepseek/openrouter/"
+                 "qwen/moonshot; env LITHE_PROVIDER): fills base_url when "
+                 "unset, sets transport/dialect defaults under explicit "
+                 "values — pair with --base-url for a custom router",
+        )
+        sp.add_argument(
             "--profile",
             help="endpoint profile name (env LITHE_PROFILE; default: active "
             "profile from lithe config --list)",
@@ -182,5 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
     config_p.add_argument("--use", metavar="NAME", help="switch the active profile")
     config_p.add_argument("--model", metavar="NAME",
                           help="set the active profile's default model")
+    config_p.add_argument("--provider", metavar="NAME",
+                          help="set the active profile's provider preset "
+                               "(none/off clears)")
 
     return p

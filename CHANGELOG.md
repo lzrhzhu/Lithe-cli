@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.1.12 (2026-10-10)
+
+The wizard catches up with providers. `lithe config` was a flat-triple
+interview from before presets existed — profiles gained `provider`
+fields that only hand-editing could set, and the changelog even claimed
+a `--provider` flag that was never wired up.
+
+- **provider-first wizard** — `lithe config` now asks profile name →
+  provider type (Tab-completed across the seven presets, `none` keeps a
+  hand-written endpoint; the preset's notes print under the prompt) →
+  base_url (defaults to the preset's official URL — override it to point
+  a provider's format at your own router) → API key → model, and saves
+  the provider field with the profile. Re-running edits the named
+  profile (name defaults to the active one); picking `none` on a profile
+  that had a provider explicitly demotes it to hand-written.
+- **protocol-aware probe** — the wizard's optional connectivity check
+  builds its request via the new `profiles.models_request`: a
+  messages-transport provider (anthropic) probes with `x-api-key` +
+  `anthropic-version` (and `limit=1000`) instead of a Bearer header
+  that would 401 against the real endpoint.
+- **`--provider` flag** — `lithe run/chat/... --provider NAME` pins the
+  preset for one invocation, flag > `LITHE_PROVIDER` > profile field,
+  matching the other endpoint pins (and 0.1.11's changelog claim);
+  `lithe config --provider NAME` sets the active profile's preset
+  non-interactively (`none`/`off` clears). The wizard's first-run result
+  now carries the provider too, so a wizard-configured anthropic profile
+  takes effect in the same process instead of falling back to
+  chat-completions until the next invocation re-read the profile.
+
+## 0.1.11 (2026-10-10)
+
+The multi-provider round, riding the kernel's new Messages transport
+(lithe 0.1.9): profiles become first-class provider endpoints, models get
+collision-proof qualified names, and a favorites lane makes switching
+between a handful of daily drivers one keystroke.
+
+- **qualified model refs `profile:model`** — the separator is `:` because
+  model ids themselves contain `/` (OpenRouter's `vendor/model`) while
+  profile names cannot contain either. `/model anthropic:claude-sonnet-4`
+  switches profile *and* model in one step (profile fields, provider
+  preset and all); an unknown prefix falls through as a bare model name
+  so colon-y custom ids keep working.
+- **profile switching is now endpoint truth** — `/profile` and session
+  resume carry every profile field (provider, document_format,
+  reasoning_effort, extra_body, default_headers, pricing, sampling), not
+  just the credential triple. Previously an in-session switch to an
+  anthropic profile kept the old vendor's preset layered over the new
+  base_url — the wrong transport talking to the wrong dialect.
+  `LITHE_PROVIDER` / `--provider` now pin the provider against in-session
+  switching, like the other endpoint env pins.
+- **`/models` is protocol-aware and can fan out** — listing uses the
+  profile's provider preset to pick its auth: `messages` endpoints
+  (anthropic) fetch with `x-api-key` + `anthropic-version` and a
+  `limit=1000` page (Bearer + no limit elsewhere). `/models all` fetches
+  every saved profile in parallel, caches each, and reports qualified
+  names — same-name models across providers stop colliding.
+- **`/model` listing is the same across frontends** — the plain REPL now
+  matches the TUI picker: ★常用 section first, then 最近 (derived from
+  session meta, zero sidecar state), then one group per profile with
+  `provider · protocol` headers. Numbered picks follow the visible order
+  and switch profiles as needed; `/profile` listings show the same
+  dialect labels (inferred from base_url when the profile has no provider
+  field — display only, never written back).
+- **favorites (`/fav`)** — qualified refs stored in the config file's
+  top-level `favorites` array; `/fav 档案:模型` toggles, the F4 picker's
+  `a` toggles the focused row, `f` collapses the (possibly huge) grouped
+  list to the favorites lane. Deleting a profile prunes its favorites;
+  malformed refs are rejected, not saved.
+
 ## 0.1.10 (2026-10-06)
 
 Multiline prompt input plus the environment-facts round, from a usage

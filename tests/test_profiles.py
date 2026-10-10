@@ -10,6 +10,7 @@ from lithe_cli.profiles import (
     DEFAULT_PROFILE,
     ProfileStore,
     fetch_models,
+    fetch_models_for,
     masked_key,
 )
 
@@ -348,6 +349,75 @@ def test_endpoint_roundtrips_provider_field(tmp_path, monkeypatch):
     assert "provider" not in fresh.endpoint("plain")
 
 
+def test_set_provider_roundtrip_case_and_clear(tmp_path, monkeypatch):
+    from lithe.bundles.providers import known_providers
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    store.upsert("a", "https://a.example/api", "sk", "m")
+
+    assert store.set_provider("a", "Anthropic")  # 大小写无关
+    assert ProfileStore().endpoint("a")["provider"] == "anthropic"
+    assert store.set_provider("a", "ZAI")
+    assert ProfileStore().endpoint("a")["provider"] == "zai"
+
+    # none/off/空 清除字段
+    assert store.set_provider("a", "off")
+    assert "provider" not in ProfileStore().endpoint("a")
+    assert store.set_provider("a", "zai")
+    assert store.set_provider("a", None)
+    assert "provider" not in ProfileStore().endpoint("a")
+
+    # 未知名 loudly（报错信息列出可用 preset）
+    with pytest.raises(ValueError) as e:
+        store.set_provider("a", "nope")
+    assert all(name in str(e.value) for name in known_providers())
+    # 未知档案名 → False 而非报错
+    assert not store.set_provider("ghost", "zai")
+
+
+def test_models_request_protocol_aware():
+    from lithe_cli.profiles import models_request
+
+    url, headers = models_request({
+        "base_url": "https://api.anthropic.com/v1", "api_key": "sk-a",
+        "provider": "anthropic"})
+    assert url.endswith("/models?limit=1000")
+    assert headers["x-api-key"] == "sk-a"
+    assert headers["anthropic-version"] == "2023-06-01"
+
+    # chat 家族 / 无 provider → Bearer；未知 provider 降级 Bearer
+    url, headers = models_request({"base_url": "https://z.example/api",
+                                   "api_key": "sk", "provider": "zai"})
+    assert url.endswith("/models") and "?" not in url
+    assert headers["Authorization"] == "Bearer sk"
+    url, headers = models_request({"base_url": "https://x/api",
+                                   "api_key": "k", "provider": "nope"})
+    assert "Authorization" in headers
+
+    # 缺凭据 → None（不抛）
+    assert models_request({"base_url": "", "api_key": ""}) is None
+
+
+def test_provider_flag_beats_env_and_profile(tmp_path, monkeypatch):
+    from lithe_cli.config import ENV_PROVIDER, load_config
+
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    for var in ("LITHE_API_KEY", "LITHE_BASE_URL", "LITHE_MODEL",
+                "LITHE_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    ProfileStore().upsert("a", "", "sk", "m", provider="zai")
+    monkeypatch.setenv(ENV_PROVIDER, "deepseek")
+    _PresetArgs.provider = "anthropic"
+    try:
+        cfg = load_config(_PresetArgs())
+        assert cfg.provider == "anthropic", "flag > env > 档案字段"
+        assert cfg.base_url == "https://api.anthropic.com/v1"
+        assert cfg.pinned_keys >= {"provider"}
+    finally:
+        _PresetArgs.provider = None
+
+
 def test_reasoning_effort_profile_roundtrip(tmp_path, monkeypatch):
     from lithe_cli.config import load_config
 
@@ -448,3 +518,113 @@ def test_document_format_field_roundtrips(tmp_path, monkeypatch):
     assert fresh.endpoint("a")["document_format"] == "inline-file"
     store.upsert("plain", "https://p.example", "sk", "m")
     assert "document_format" not in fresh.endpoint("plain")
+
+
+# --- favorites（跨档案常用模型） -----------------------------------------------
+
+def test_favorites_roundtrip_toggle_and_prune(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path))
+    store = ProfileStore()
+    store.upsert("zhipu", "https://z.example/api", "sk-z", "glm-4.6")
+    store.upsert("anthropic", "https://api.anthropic.com/v1", "sk-a",
+                 "claude-sonnet-4")
+
+    # toggle on → persisted in order; a fresh store reads the same list
+    assert store.toggle_favorite("zhipu:glm-4.6") is True
+    assert store.toggle_favorite("anthropic:claude-sonnet-4") is True
+    assert ProfileStore().favorites() == [
+        "zhipu:glm-4.6", "anthropic:claude-sonnet-4"]
+
+    # toggle again removes just that ref
+    assert store.toggle_favorite("zhipu:glm-4.6") is False
+    assert ProfileStore().favorites() == ["anthropic:claude-sonnet-4"]
+
+    # malformed refs / unknown profiles are rejected, not saved
+    assert store.toggle_favorite("ghost:model") is None
+    assert store.toggle_favorite("no-colon") is None
+    assert store.toggle_favorite("zhipu:") is None
+    assert ProfileStore().favorites() == ["anthropic:claude-sonnet-4"]
+
+    # deleting the profile prunes its favorites (load-time, ghost-free)
+    store.delete("anthropic")
+    assert ProfileStore().favorites() == []
+
+    # a favorites key pointing at dead profiles on disk is cleaned on read
+    (tmp_path / "config.json").write_text(json.dumps({
+        "version": 2, "active": "zhipu",
+        "favorites": ["zhipu:glm-4.6", "gone:m"],
+        "profiles": {"zhipu": {"api_key": "sk", "base_url": "https://z",
+                                "model": "glm-4.6"}},
+    }), encoding="utf-8")
+    assert ProfileStore().favorites() == ["zhipu:glm-4.6"]
+
+    # unrelated mutations round-trip the favorites untouched
+    store2 = ProfileStore()
+    store2.upsert("b", "https://b.example", "sk", "m")
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["favorites"] == ["zhipu:glm-4.6"]
+
+
+# --- fetch_models_for（协议感知的 /models） ------------------------------------
+
+class _Resp:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def read(self):
+        return json.dumps(self.payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_fetch_models_for_messages_protocol_auth(tmp_path, monkeypatch):
+    """anthropic 档案（messages transport）用 x-api-key + version 头拉取，
+    并带 limit 避免 20 条默认分页截断。"""
+    import lithe_cli.profiles as profiles
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=10.0):
+        seen["url"] = req.full_url
+        seen["headers"] = dict(req.headers)
+        return _Resp({"data": [{"id": "claude-sonnet-4"},
+                               {"id": "claude-opus-4"}]})
+
+    monkeypatch.setattr(profiles, "urlopen", fake_urlopen)
+    models = fetch_models_for({
+        "base_url": "https://api.anthropic.com/v1", "api_key": "sk-a",
+        "provider": "anthropic"})
+    assert models == ["claude-sonnet-4", "claude-opus-4"]
+    assert seen["url"].endswith("/models?limit=1000")
+    headers = {k.lower(): v for k, v in seen["headers"].items()}
+    assert headers.get("x-api-key") == "sk-a"
+    assert headers.get("anthropic-version") == "2023-06-01"
+    assert "authorization" not in headers
+
+
+def test_fetch_models_for_bearer_default_and_guards(monkeypatch):
+    import lithe_cli.profiles as profiles
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=10.0):
+        seen["url"] = req.full_url
+        seen["headers"] = dict(req.headers)
+        return _Resp({"data": [{"id": "glm-4.6"}]})
+
+    monkeypatch.setattr(profiles, "urlopen", fake_urlopen)
+    # chat 档案（或没有 provider 字段）：OpenAI 式 Bearer
+    models = fetch_models_for({"base_url": "https://z.example/api",
+                               "api_key": "sk-z", "provider": "zai"})
+    assert models == ["glm-4.6"]
+    assert seen["url"].endswith("/models")
+    assert not seen["url"].endswith("limit=1000")
+    assert any(k.lower() == "authorization" for k in seen["headers"])
+    # 未知 provider 退回 Bearer；缺凭据 → None（不抛）
+    assert fetch_models_for({"base_url": "https://x", "api_key": "k",
+                             "provider": "nope"}) is not None
+    assert fetch_models_for({"base_url": "", "api_key": ""}) is None

@@ -20,9 +20,14 @@ pip install lithe-cli
 There is no default endpoint — the CLI refuses to run rather than silently
 hitting some third-party URL. The easiest way in is the wizard: on the
 first `lithe chat` / `lithe run` (or any time, via `lithe config`) an
-interactive terminal prompts for the three essentials and saves them to
-`$LITHE_HOME/config.json` (mode 0600 — it holds the key). An optional
-connectivity probe catches typos before your first turn.
+interactive terminal walks a **provider-first interview** — profile name,
+provider type (Tab-completed: openai / anthropic / zai / deepseek /
+openrouter / qwen / moonshot, or `none` for a hand-written endpoint),
+base_url (defaults to the preset's official URL — override it to point a
+provider's format at your own router), API key, model — and saves them
+to `$LITHE_HOME/config.json` (mode 0600 — it holds the key). An optional
+connectivity probe catches typos before your first turn, using the
+provider's own auth (`x-api-key` for messages endpoints).
 
 The config file holds **named profiles** — several endpoints, one active:
 
@@ -42,17 +47,28 @@ A profile may set `"provider"` instead of (or alongside) `base_url`: the
 vendor preset from `lithe.bundles.providers` fills `base_url` when unset
 and contributes `LLMConfig` defaults (transport, `extra_body`,
 `default_headers`) **under** your explicit values — you write the key and
-model, the preset knows the endpoint shape. `LITHE_PROVIDER` overrides the
-profile field; `config --list` / `--show` display it; an unknown name fails
-loudly with the available presets (openai / zai / deepseek / openrouter /
-qwen / moonshot).
+model, the preset knows the endpoint shape. `--provider` /
+`LITHE_PROVIDER` override the profile field; `config --list` / `--show`
+display it; an unknown name fails loudly with the available presets
+(openai / anthropic / zai / deepseek / openrouter / qwen / moonshot).
 
 ```bash
-lithe config                 # wizard (edits the active profile)
+lithe config                 # provider-first wizard (edits a named profile)
 lithe config --list          # profiles, key masked
 lithe config --use openrouter   # switch active profile (script-friendly)
 lithe config --model glm-4.5    # set the active profile's default model
+lithe config --provider anthropic   # set the active profile's preset
+                                    # (none/off clears)
 lithe models                 # GET {base_url}/models, cached into the profile
+```
+
+A one-shot provider for a single invocation pairs the flag with an
+explicit `--base-url` — the custom-router form without touching the
+config file:
+
+```bash
+lithe run --provider openrouter --base-url https://my-router/api/v1 \
+          --api-key sk-... --model vendor/claude-sonnet-4 "task"
 ```
 
 To configure by hand instead, point the CLI at any OpenAI-compatible

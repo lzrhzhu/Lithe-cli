@@ -239,14 +239,22 @@ def _restrict_to_owner(path: Path, directory: bool = False) -> None:
         raise OSError(f"failed to restrict access to {path}")
 
 
-def save_endpoint(api_key: str, base_url: str, model: str) -> Path:
-    """Write the endpoint into the active profile (creating ``default`` when
-    no profile exists), preserving every other saved profile."""
+def save_endpoint(
+    api_key: str,
+    base_url: str,
+    model: str,
+    provider: str | None = None,
+    name: str | None = None,
+) -> Path:
+    """Write the endpoint into a profile (creating ``default`` when no
+    profile exists), preserving every other saved profile. *name* picks
+    the profile (default: the active one); *provider* records the vendor
+    preset the profile belongs to."""
     from .profiles import DEFAULT_PROFILE, ProfileStore
 
     store = ProfileStore()
-    name = store.active_name() or DEFAULT_PROFILE
-    return store.upsert(name, base_url, api_key, model)
+    profile = name or store.active_name() or DEFAULT_PROFILE
+    return store.upsert(profile, base_url, api_key, model, provider=provider)
 
 
 def load_config(args: Any) -> Config:
@@ -285,15 +293,20 @@ def load_config(args: Any) -> Config:
             ("api_key", g("api_key", None), ENV_API_KEY),
             ("base_url", g("base_url", None), ENV_BASE_URL),
             ("model", g("model", None), ENV_MODEL),
+            # LITHE_PROVIDER / --provider pin the vendor preset for this
+            # invocation: in-session profile switching must not swap it out
+            # from under a CI-pinned dialect.
+            ("provider", g("provider", None), ENV_PROVIDER),
         )
         if flag or os.environ.get(env)
     )
-    # Vendor preset (profile "provider" field > LITHE_PROVIDER): fills
-    # base_url when nothing explicit set it — the preset's whole point —
-    # while every explicit value stays untouched. An unknown name is a
-    # config typo: die loudly like an unknown --profile, listing options.
-    provider = (os.environ.get(ENV_PROVIDER) or saved.get("provider")
-                or g("provider", None))
+    # Vendor preset (--provider flag > LITHE_PROVIDER > profile field,
+    # matching the other endpoint pins): fills base_url when nothing
+    # explicit set it — the preset's whole point — while every explicit
+    # value stays untouched. An unknown name is a config typo: die
+    # loudly like an unknown --profile, listing options.
+    provider = (g("provider", None) or os.environ.get(ENV_PROVIDER)
+                or saved.get("provider"))
     base_url = (
         g("base_url", None) or os.environ.get(ENV_BASE_URL)
         or saved.get("base_url")
@@ -387,6 +400,10 @@ def require_endpoint(cfg: Config, interactive: bool = False) -> None:
             cfg.api_key = cfg.api_key or saved.get("api_key")
             cfg.base_url = cfg.base_url or saved.get("base_url")
             cfg.model = cfg.model or saved.get("model")
+            # a wizard-configured provider takes effect this process: the
+            # right transport/auth, not a chat-completions default until
+            # the next invocation reads the profile back.
+            cfg.provider = cfg.provider or saved.get("provider")
             if cfg.has_endpoint:
                 return
     raise SystemExit(

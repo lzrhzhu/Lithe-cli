@@ -127,6 +127,36 @@ def ask(
     return None
 
 
+def choose(label: str, choices: list[str], default: str = "") -> str | None:
+    """Ask for one of *choices* with Tab completion; empty keeps *default*.
+
+    The answer matches case-insensitively and comes back in the choice's
+    own spelling. Returns None when the user bails out (empty too often,
+    Ctrl+C/D).
+    """
+    from prompt_toolkit.completion import WordCompleter
+
+    lowered = {c.lower(): c for c in choices}
+    completer = WordCompleter(list(lowered.values()), ignore_case=True)
+    for _ in range(_MAX_EMPTY_TRIES):
+        try:
+            answer = prompt(f"{label}: ", default=default,
+                            completer=completer).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        except UnicodeDecodeError:
+            print(ui.s(_UTF8_HINT, RED))
+            continue
+        if not answer:
+            return default
+        if answer.lower() not in lowered:
+            print(ui.s(f"  请从这些选项中选择：{'、'.join(choices)}", YELLOW))
+            continue
+        return lowered[answer.lower()]
+    return None
+
+
 def yes_no(label: str, default: bool) -> bool:
     """A y/n question; empty answer takes the default."""
     hint = "Y/n" if default else "y/N"

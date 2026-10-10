@@ -358,6 +358,10 @@ class PickerModal(ModalScreen):
         Binding("d", "letter('d')", show=False),
         Binding("r", "letter('r')", show=False),
         Binding("s", "letter('s')", show=False),
+        # model picker: favorite the focused row / favorites-only filter.
+        # Gated by each picker's letter_actions, inert elsewhere.
+        Binding("a", "letter('a')", show=False),
+        Binding("f", "letter('f')", show=False),
         # In-place toggle for the settings picker: flips the focused row
         # without dismissing, so several knobs change in one visit.
         Binding("space", "toggle", "切换（不关闭）", priority=True),
