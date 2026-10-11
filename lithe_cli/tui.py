@@ -106,6 +106,11 @@ class TuiState:
         self.max_total_tokens: int | None = None
         self.tools: list[dict] = []
         self.feed: list[tuple[str, str]] = []
+        # The current turn's REASONING digests, in arrival order. They
+        # render in the conversation's live thinking lane (spinner while
+        # the turn runs, a click-to-expand fold afterwards), not as feed
+        # rows — the feed stays the answer transcript.
+        self.thinking: list[str] = []
         # One independently searchable transcript per delegation instance.
         # The kernel already gives each parallel invocation a unique tag.
         self.subagents: dict[str, dict] = {}
@@ -259,6 +264,11 @@ class TuiState:
         if kind == "run_start":
             self.status = "思考中"
             self.step = 0
+            # New turn, new lanes: the thinking digest list restarts and
+            # the previous turn's duration stops standing in for this one
+            # (a failed run that never sees ``done`` shows no stale time).
+            self.thinking = []
+            self.last_turn_duration = None
             # A previous round that died without a done event (host-level
             # failure) still burned tokens: keep its measured usage instead
             # of silently dropping it when the accumulators reset.
@@ -332,7 +342,9 @@ class TuiState:
         elif kind == "reasoning":
             digest = str(ev.get("text") or ev.get("summary") or "").replace("\n", " ")
             if digest:
-                self.say("reason", f"~ {digest[:200]}")
+                # generous cap: the thinking lane folds the digest away,
+                # so a long one costs one heading line until opened
+                self.thinking.append(digest[:800])
         elif kind == "error":
             self.status = "失败"
             self.say("err", str(ev.get("message") or "运行出错"))

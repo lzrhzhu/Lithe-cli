@@ -206,8 +206,8 @@ def _cmd_doctor() -> int:
     class _Args:  # doctor reuses load_config over env-only defaults
         api_key = base_url = model = profile = store = workspace = user = None
         skills = mcp = None
-        download = code = shell = vision = color = no_color = verbose = False
-        subagents = document = False
+        # capability attrs stay absent on purpose: getattr falls back to
+        # load_config's defaults (the flag-less truth doctor should show)
 
     cfg = load_config(_Args())
     print(ui.s(f"lithe-cli {__version__}（lithe {lithe_version}）", CYAN, BOLD))
@@ -270,6 +270,13 @@ def _cmd_doctor() -> int:
     print(ui.kv("sandbox", sandbox_line + "；--code 启用 run_code"))
     command_line = "已启用（run_command 可执行主机命令）" if cfg.shell else "未启用（--shell 显式授权）"
     print(ui.kv("shell", command_line))
+    caps = []
+    caps.append("图像 ✓" if cfg.vision else "图像 ×")
+    caps.append("文档 ✓" if cfg.document else "文档 ×")
+    caps.append("下载 ✓" if cfg.download else "下载 ×")
+    caps.append("委派 ✓" if cfg.subagents else "委派 ×")
+    print(ui.kv("capabilities", " · ".join(caps)
+                + "（默认开启；对应 --no-* flag 或会话内 /set 关闭）"))
 
     skills = default_skills_dir()
     if cfg.skills_dir is not None:
@@ -535,6 +542,15 @@ def _run_textual(cfg: Any, task: str | None, mode: str, args: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # GBK-era Windows: piped stdout uses the ANSI codepage, where glyphs
+    # like ✓/✗ cannot encode. Degrade them to '?' instead of crashing the
+    # whole command on a print (the interactive console is UTF-8 already,
+    # so nothing changes there).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     args = build_parser().parse_args(argv)
     if args.command is None:
         build_parser().print_help()

@@ -1,5 +1,162 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.0 (2026-10-11)
+
+- **fix: profile model is optional end-to-end** — a blank model in the
+  F7 form (or `config`) clears the stored default instead of saving an
+  empty string; switching to such a profile keeps the current model,
+  and `/models` listings fill the choice later. A profile deleted
+  after its session ran no longer crashes the resume path.
+- **fix: F4 model picker keeps profile groups complete** — the ★常用 /
+  最近 quick lanes and the per-profile groups are complementary views,
+  not a partition: a cached model that also sits in a favorite or a
+  session-recent stays listed in its group (dedup now applies only
+  inside a lane and inside a group), so a group never collapses to
+  just the current model.
+
+A conversation-first chrome round: run state moves out of the sidebar
+into the conversation itself — a live `thinking` lane with a spinner,
+the turn's duration under its output — the footer status bar goes away
+entirely, the sidebar separates from the transcript by background
+color instead of a divider line, polish passes tune the prompt band,
+the user-message block, Markdown paragraph spacing, the welcome logo
+is regenerated to actually spell "Lithe", the whole palette moves to a
+violet family, and the capability defaults flip to secure-by-default:
+analysis bundles on, execution surfaces off.
+
+- **capability defaults: analysis on, execution off** — `--vision`,
+  `--document` and `--download` now default to ON (their bundles —
+  image/document probe+analysis, SSRF-guarded download — are read/ingress
+  surfaces), each gaining a `--no-vision` / `--no-document` /
+  `--no-download` opt-out (BooleanOptionalAction, like subagents) plus
+  the existing in-session `/set` toggles. `--code` and `--shell` stay
+  opt-in: they execute arbitrary code and host commands. `lithe doctor`
+  gains a capabilities line showing the four toggles at a glance; the
+  subagent operator joins the default roster (it only carries
+  `download_file` under the new defaults — still no new powers).
+- **welcome logo spells "Lithe"** — the ASCII-art logo was a garbled
+  non-word; regenerated with the ANSI Shadow font it now reads Lithe.
+
+- **polish: violet palette** — the screen recolors from slate/blue to
+  violet and related hues: deep violet page (`#14101f`) with a darker
+  sidebar band, violet prompt band and user-message panel, lavender
+  tool/bullet/code/link/heading colors, purple thinking lane and
+  welcome accents. Success/error/warn stay green/red/amber (semantic).
+- **polish: user messages are a background block, not a frame** —
+  quoted input reads as a solid panel (`#272040`, near-white
+  violet-tinted text) spanning the pane, one breathing line above each
+  message, no borders anywhere (`_sync_feed` groups contiguous user
+  rows so multi-line messages form one band).
+- **polish: Markdown paragraphs butt together** — blank lines between
+  paragraphs render as nothing at all (even a single blank row read as
+  a wide gap on tall terminal rows); code fences keep their blank
+  lines verbatim.
+- **polish: the prompt band gets a solid background** — the editing
+  area drops the muddy `$surface 60%` overlay for a crisp violet band
+  (`#1c1631`); the dim model/reasoning info line rides its bottom.
+- **no footer status bar; endpoint info moves into the editing area** —
+  the slim status line below the prompt (`● 完成 · /help 查看命令` /
+  `● 思考中 · 12.3s · Ctrl+C 取消`) is gone: its hints duplicated the
+  sidebar's folded 按键 section and its run state duplicated the
+  conversation's thinking lane. In its place the prompt band's bottom
+  carries a dim info line — `glm-4.6 · zhipu · 推理 high` — the
+  effective model with its profile plus the reasoning effort when set
+  (`prompt_info_text` replaces `footer_text`; the spinner heartbeat
+  now resyncs the whole thinking lane, so one-shot runs keep streaming
+  digests into it too).
+
+- **run state lives in the conversation, not the sidebar** — the
+  sidebar's 运行 section is gone. While a turn runs, the conversation
+  shows a `⠋ thinking · 12.3s` lane (a rotating braille spinner —
+  `ThinkingRow` ticks at ~8 fps on its own timer so long silent model
+  calls still look alive — plus the live elapsed); a click unfolds the
+  turn's accumulated REASONING digests. When the turn ends the lane
+  settles under the output: `▸ thought · 4.2s` when the model reasoned
+  (click re-folds/unfolds), a dim `model · 4.2s` meta line otherwise —
+  the current turn's duration always sits below its message. The next
+  `run_start` resets the lane (collapsed, spinner again); a failed run
+  that never sees `done` shows no stale duration (`run_start` clears
+  `last_turn_duration`).
+- **no sidebar divider; panes separate by background** — the sidebar
+  drops its one-column `border-left` and sits on a darker background
+  band (`#0b1220` over the pinned `#0f172a` page color), kilo-style:
+  color contrast + whitespace, no line.
+- **fix: `FormModal` was no longer imported** — the app used it for
+  F7's endpoint form but the name had fallen out of `ttui.py`'s import
+  block, so `n`/`e` in the endpoint picker crashed with `NameError`.
+
+A Kilo-style chrome round on top of the F7 work: the boxes come off,
+the header strip goes away, the sidebar learns to fold, the newline key
+works in real terminals, and a second polish pass moves the key map off
+the footer, spaces the transcript, and folds the thinking.
+
+- **polish: key map off the footer into a folded sidebar section** — the
+  footer shrank to a slim status line (`● 思考中 · 12.3s · Ctrl+C 取消`
+  while running, `● 完成 · /help 查看命令` idle, status-colored). The
+  F2–F7 / Enter / Ctrl+J / Esc map now lives in a new 按键 sidebar
+  section, folded by default with `F2–F7 · /help` as its summary.
+- **polish: thinking renders as numbered click-to-expand folds** —
+  REASONING digests mount as `▸ 思考 #N` rows (purple heading, click
+  toggles the body) instead of one flat truncated line; the digest cap
+  rose to 800 chars since a fold costs one line until opened.
+  (`FoldRow`/`FoldHead` join the widget set — note its refresh method is
+  `_sync_view`, because `_render` is Widget's internal Visual producer
+  and overriding it hands the renderer a None visual.)
+- **polish: transcript paragraph spacing + taller prompt** — feed rows
+  get one breathing line at class transitions (user → tool → answer →
+  notices; lines inside a block stay dense), and the prompt box grows to
+  a minimum of 3 lines (max 10).
+- **fix: Ctrl+Enter 换行 did nothing in real terminals** — most
+  terminals cannot send a distinguishable Ctrl+Enter: Windows ones
+  deliver a plain CR (indistinguishable from Enter, so the line
+  submitted), and the LF others send arrives in Textual as `ctrl+j`;
+  only enhanced (kitty/CSI-u) reporting emits a real `ctrl+enter`.
+  The prompt now binds all three — `Ctrl+J`, `Ctrl+Enter` and
+  `Shift+Enter` — and the footer names the one that works everywhere:
+  Ctrl+J.
+
+- **borderless chrome** — the conversation pane, sidebar and prompt lose
+  their rounded box borders; the sidebar keeps only a one-column dim
+  divider, the prompt is a bare `❯` line, the footer is a single dim
+  line with no background, and assistant text renders in the default
+  foreground instead of green (user lines stay blue, tools cyan).
+- **no header strip** — the top bar (version · session · profile ·
+  workspace) is gone; that truth already lives in the sidebar's 会话 /
+  模型 sections. `header_text` is removed with it.
+- **collapsible sidebar sections** — 会话 / 模型 / 运行 / 工具 / 待办 /
+  用量 each render under a `▾`/`▸` heading; clicking the heading folds
+  or unfolds the body. A folded section keeps a one-line summary in the
+  heading (session id, model, status, todo count, and for 用量:
+  输入/输出/费用/上下文百分比), so folding costs no information at a
+  glance. 用量 starts folded — the verbose seven-line breakdown is one
+  click away. `sidebar_markup` gains a `collapsed` set;
+  `sidebar_sections` / `section_header` are the new pure builders.
+- **fix: `e` 编辑 / `p` 改 provider did nothing** — the endpoint picker
+  advertised both letters, but `PickerModal` carried no key bindings for
+  them, so the press fell through. The bindings now exist (gated by each
+  picker's `letter_actions`, inert elsewhere) and the edit form opens
+  pre-filled for the focused profile.
+- **`d` 删除档案** — a confirmation modal (y/n, its own title via
+  `ConfirmModal`'s new `title` parameter), then `workbench.delete_profile`:
+  favorites die with the profile; deleting the *current* one falls back
+  to the store's next active profile (endpoint truth re-adopted), and
+  when none remain the session keeps its endpoint fields env-style. The
+  picker reopens with the refreshed list either way.
+- **model is optional in the F7 form** — a blank value stores no default
+  and explicitly clears one the profile had (`upsert` no longer keeps
+  the old model when the form submits an empty one); validation now
+  requires only 档案名 / base_url / API key. A bare profile prints the
+  `F4 或 /models 拉取列表后选择` hint on save — the `/models` listing
+  fills the choice, so the single-model field was never a real
+  requirement. `set_profile`'s message says `未设置模型` instead of
+  `None` for model-less profiles.
+- **fix: resuming a session whose profile was deleted crashed** —
+  `sync_session_pin` called `endpoint(name)` on a name the store no
+  longer knew and let the SystemExit escape; deletion is now a UI
+  action, so the miss degrades to "keep the current endpoint".
+
 ## 0.2.1 (2026-10-10)
 
 The minor bump marks the TUI becoming a complete endpoint console: the
@@ -122,7 +279,7 @@ high-success-rate agents solve it (one tool, workdir, containment,
 per-platform prompt facts).
 
 - **the prompt area is multiline** — `HistoryInput` is now a
-  `TextArea`: Enter sends, Ctrl+Enter inserts a newline, history recall
+  `TextArea`: Enter sends, Ctrl+J / Ctrl+Enter insert a newline, history recall
   stays on ↑/↓ while the cursor is on the first/last line, and command
   completion hides for multiline drafts. Pasting multi-line text no
   longer drops everything after the first line.

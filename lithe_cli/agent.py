@@ -7,13 +7,17 @@ Everything here maps lithe's host contract onto CLI defaults:
 - store — ``JsonlRunStore`` under ``~/.lithe/runs`` (``--store``), the
   kernel's zero-database default;
 - tools — the workspace bundle (read/write/edit/list/search/glob +
-  apply_patch) and todos, plus opt-in capabilities: ``--code`` (sandboxed
-  Python), ``--shell`` (native host commands), ``--skills`` (markdown skill
-  library), ``--vision`` (image probe/analysis), ``--document``
-  (PDF/OOXML probe/analysis — dialect from ``--document-format`` > profile
-  ``document_format`` > provider preset), ``--download`` (SSRF-guarded
-  network fetch), ``--mcp`` (external MCP servers) and ``--subagents``
-  (kernel delegation on the CLI's default roster);
+  apply_patch) and todos, plus capabilities: ``--vision`` (image
+  probe/analysis), ``--document`` (PDF/OOXML probe/analysis — dialect
+  from ``--document-format`` > profile ``document_format`` > provider
+  preset) and ``--download`` (SSRF-guarded network fetch) are ON by
+  default (``--no-vision`` / ``--no-document`` / ``--no-download`` or
+  in-session ``/set`` disable); the execution surfaces stay opt-in —
+  ``--code`` (sandboxed Python) and ``--shell`` (native host commands)
+  are off until asked for. ``--skills`` (markdown skill library),
+  ``--mcp`` (external MCP servers) and ``--subagents`` (kernel
+  delegation on the CLI's default roster, on by default) complete the
+  roster;
 - undo — the bundled tools register reverters, so ``lithe undo`` works with
   zero configuration.
 """

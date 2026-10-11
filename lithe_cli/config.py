@@ -9,25 +9,33 @@ silently hitting some third-party URL. Resolution order is flag > env >
 interactive terminal a missing endpoint triggers the wizard instead of
 the refusal — see :mod:`lithe_cli.setup`.
 
-Capability flags (off unless asked for, except where noted):
+Capability flags (only the execution surfaces — shell and code — are off
+unless asked for; the analysis/ingress bundles below default to ON and
+turn off with their ``--no-*`` flag or in-session ``/set``):
 
 - ``--code``       sandboxed ``run_code`` / ``run_file`` tools (bwrap when
-                   available, passthrough otherwise);
+                    available, passthrough otherwise); **off by default**;
+- ``--shell``      native ``run_command`` (host permissions, not sandboxed,
+                    not undoable); **off by default**;
+- ``--download``   ``download_file`` (SSRF-guarded network fetch); on by
+                    default, ``--no-download`` disables;
 - ``--skills DIR`` a markdown skill library (``load_skill`` tool); defaults
-                   to ``$LITHE_HOME/skills`` when that directory exists,
-                   ``--skills ""`` disables it;
+                    to ``$LITHE_HOME/skills`` when that directory exists,
+                    ``--skills ""`` disables it;
 - ``--mcp SPEC``   external MCP servers (JSON array/object, or ``@file``);
-                   env ``LITHE_MCP`` holds the same spec;
+                    env ``LITHE_MCP`` holds the same spec;
 - ``--vision``     ``image_info`` + ``analyze_image`` (one vision call on
-                    the main endpoint, memoized per file hash);
+                    the main endpoint, memoized per file hash); on by
+                    default, ``--no-vision`` disables;
 - ``--document``   ``document_info`` + ``analyze_document`` (PDF/OOXML
                     reading on the main endpoint; the content-block dialect
                     comes from ``--document-format`` > the profile's
-                    ``document_format`` field > the provider preset);
+                    ``document_format`` field > the provider preset); on by
+                    default, ``--no-document`` disables;
 - ``--subagents``  delegate/delegate_parallel on the default roster; ON by
-                   default — the roster reuses already-enabled tools only
-                   (no new powers), so this is a spend selector, not a
-                   security gate; ``--no-subagents`` disables.
+                    default — the roster reuses already-enabled tools only
+                    (no new powers), so this is a spend selector, not a
+                    security gate; ``--no-subagents`` disables.
 """
 
 from __future__ import annotations
@@ -70,7 +78,10 @@ class Config:
     # document_format fills in when neither is set (inside build_llm, so
     # in-session profile switches re-resolve it). None = not explicit.
     document_format: str | None = None
-    document: bool = False
+    # Capability bundles: the analysis/ingress ones default ON (--no-* to
+    # disable); the execution surfaces (code/shell) default OFF — see the
+    # module docstring for the per-flag rationale.
+    document: bool = True
     # Subagent delegation (kernel bundles.subagents): grants delegate /
     # delegate_parallel on the CLI's default roster. ON by default — the
     # roster only carries already-registered tools (delegation adds no new
@@ -114,14 +125,14 @@ class Config:
     # the gateway sends one) always wins over the base.
     sleep_429: float = 2.0
     sleep_err: float = 1.0
-    download: bool = False
+    download: bool = True
     verbose: bool = False
     code: bool = False
     shell: bool = False
     skills_dir: Path | None = None
     mcp_spec: str | None = None
     mcp_servers: list = field(default_factory=list)
-    vision: bool = False
+    vision: bool = True
     color: bool | None = None
     # Keys fixed by flag/env this invocation: in-session profile switching
     # must not clobber them (CI pinning LITHE_MODEL stays pinned).
@@ -346,7 +357,7 @@ def load_config(args: Any) -> Config:
         document_format=(document_format.strip()
                          if isinstance(document_format, str)
                          and document_format.strip() else None),
-        document=g("document", False),
+        document=g("document", True),
         subagents=g("subagents", True),
         max_cost=g("max_cost", None),
         max_total_tokens=g("max_total_tokens", None),
@@ -371,14 +382,14 @@ def load_config(args: Any) -> Config:
         attempts=g("attempts", 2),
         sleep_429=g("sleep_429", 2.0),
         sleep_err=g("sleep_err", 1.0),
-        download=g("download", False),
+        download=g("download", True),
         verbose=g("verbose", False),
         code=g("code", False),
         shell=g("shell", False),
         skills_dir=skills_dir,
         mcp_spec=mcp_raw,
         mcp_servers=load_mcp_spec(mcp_raw) if mcp_raw else [],
-        vision=g("vision", False),
+        vision=g("vision", True),
         color=(True if g("color", False) else False if g("no_color", False) else None),
         pinned_keys=pinned,
     )

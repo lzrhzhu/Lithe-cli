@@ -60,6 +60,9 @@ lithe config --model glm-4.5    # set the active profile's default model
 lithe config --provider anthropic   # set the active profile's preset
                                     # (none/off clears)
 lithe models                 # GET {base_url}/models, cached into the profile
+                              # （in chat: /models refreshes the current
+                              #  profile's cache; /models all fans out to
+                              #  every saved profile in parallel）
 ```
 
 A one-shot provider for a single invocation pairs the flag with an
@@ -126,27 +129,61 @@ sidebar and adjust via `/set` (`off` clears). Sampling:
 
 On an interactive terminal, `lithe chat` and `lithe run TASK` open a
 persistent full-screen interface (built on [Textual](https://textual.textualize.io))
-instead of scribbling one-line events into the console. The left pane is
-the conversation; the right sidebar is five fixed sections — 会话（current
-+ recent ones, `●` marks sessions with a turn still running）、模型、运行、
-工具/待办、用量:
+instead of scribbling one-line events into the console. The chrome is
+deliberately quiet (kilo-style): no box borders and no header strip —
+just the conversation on the left (blocks separated by a breathing
+line; your own messages sit on a solid violet panel with near-white
+text, so quoted input reads as a block), and a sidebar of **collapsible sections** on the right on
+a darker background band — the two panes separate by color alone, with
+no divider line (click a `▾`/`▸` heading to fold/unfold; a folded
+section keeps its one-line summary — the numbers worth a glance never
+require unfolding). There is no run-status section: while a turn runs
+the conversation itself shows a live `⠋ thinking · 12.3s` lane (a
+rotating spinner, the live elapsed, click to unfold the model's
+reasoning), and once the turn ends that lane settles under the output —
+`▸ thought · 4.2s` when the model reasoned, a dim `model · 4.2s` meta
+line otherwise — so the current turn's duration always sits below its
+message. Section headings render bold with their bodies indented
+underneath in regular weight, and a 工作区 section carries the resolved
+workspace path (wrapped at path separators). There is no footer status
+bar — the key map lives in the sidebar's folded 按键 section, and run
+state belongs to the conversation. The prompt is a taller `❯` box (min
+3 lines) on a solid, slightly raised background band whose bottom
+carries a dim info line — `glm-4.6 · zhipu · 推理 high` (model with
+its profile, plus the reasoning effort when one is set), the endpoint
+truth at a glance where you type. Assistant replies render as
+Markdown — headings keep their text but lose the `#` markers (a `▍`
+bar and weight carry the level), `**emphasis**`/`` `code` ``/links
+turn into styled spans, fenced code blocks render whole as
+pygments-highlighted code (the terminal's own 16-color palette via
+rich's `ansi_dark`, unknown language tags fall back to plain), lists
+normalize to `•`/`n.`/task glyphs, and blank lines between paragraphs
+render as nothing (code fences keep them verbatim) so the transcript
+stays dense — while anything that is *not* Markdown
+(bracket pairs like `[dim]`, unclosed markers, intraword `2*3*4`)
+passes through verbatim, and `/copy` still lifts the original
+Markdown off the feed.
+
+A fresh, empty conversation opens on a welcome screen — the lithe logo
+plus the effective model, workspace and session, and the handful of keys
+worth knowing — which the first message replaces (it is chrome, never
+feed: `/copy` still reports an empty conversation while it shows).
 
 ```text
- lithe 0.2.1 · ▣ #12 重构计划 │ zhipu · glm-4.6 │ ~/myproj      ● 运行中
-╭──────────────────────────────────────╮╭──────────────────────────╮
-│ 把 a.txt 改成三行待办清单            ││ ◆ 会话                   │
-│ ◆ edit_file · 局部修改 a.txt        ││ #12 重构计划 ●           │
-│ ✓ 编辑 a.txt（+3 -1 行） 0.0s       ││ #11 bugfix ✓ 7轮         │
-│ 已完成。                             ││ F3 切换 · /new 新建      │
-│                                      ││ ◆ 模型                   │
-│                                      ││ zhipu · glm-4.6          │
-│                                      ││ zai · chat · F7 端点     │
-│                                      ││ ◆ 会话用量               │
-│                                      ││ 输入 1,024 · 输出 216    │
-╰──────────────────────────────────────╯╰──────────────────────────╯
- Tab 采纳 → /model  /models  /new
- lithe ❯ _
- ● 运行中 · 步骤 2/35   Enter 发送 · F2 侧栏 · F3 会话 · F4 模型 · F5 设置 · F6 推理 · F7 端点 · /help
+  把 a.txt 改成三行待办清单                │ ▾ 会话
+  ◆ edit_file · 局部修改 a.txt             │ ▾ 工作区
+                                           │ I:\Lithe\my-project
+  ✓ 编辑 a.txt（+3 -1 行） 0.0s           │ ▾ 模型
+                                           │ zhipu · glm-4.6
+  ⠋ thinking · 4.2s                       │ zai · chat · F7 端点
+                                           │ ▾ 工具
+                                           │ ✓ edit_file 0.0s
+                                           │ ▾ 待办 1/2
+                                           │ [~] 改 a.txt
+                                           │ ▸ 用量 输入 1,024 · 输出 216 · $0.0008 · 上下文 0.8%
+  Tab 采纳 → /model  /models  /new        │ ▸ 按键 F2–F7 · /help
+  ❯ _                                     │
+    glm-4.6 · zhipu · 推理 high
 ```
 
 **Switch without leaving the screen**: `F3` opens the session picker
@@ -157,8 +194,10 @@ capability; see below), and `F7` the **endpoint manager** — every saved
 profile with its `provider · transport` dialect, base_url and masked
 key; `Enter` switches, `n` creates a profile right in the form (provider
 type cycled with Enter, base_url defaulting to each preset's official
-URL — overridable for custom routers, star-echoed API key), `e` edits
-one, `p` swaps its provider type. A profile created in the form is
+URL — overridable for custom routers, star-echoed API key; the model
+field is optional — leave it blank and pick from the `/models` listing
+afterwards), `e` edits one, `p` swaps its provider type, `d` deletes one
+after a y/n confirmation. A profile created in the form is
 switched to on save; edits to the current profile apply to the next
 turn. Switching away from a running session does **not**
 cancel it — its badge stays lit and the pane rebuilds from the store when
@@ -222,16 +261,18 @@ kernel maps it per protocol (`reasoning_effort` on chat-completions,
 
 ### Extra capabilities
 
-The kernel ships these as bundles; the CLI grants them per flag:
+The kernel ships these as bundles. Default policy: only the execution
+surfaces are off until asked for — the analysis/ingress bundles are on
+out of the box:
 
 | Flag | Tools granted | Notes |
 | --- | --- | --- |
-| `--code` | `run_code` / `run_file` | Python under bubblewrap when installed (passthrough otherwise); `doctor` shows which |
-| `--shell` | `run_command` | Native bash/sh on Linux and macOS, PowerShell/cmd on Windows; runs with the current user's host permissions, is not sandboxed, and cannot be undone |
+| `--code` | `run_code` / `run_file` | Python under bubblewrap when installed (passthrough otherwise); `doctor` shows which; **off by default** |
+| `--shell` | `run_command` | Native bash/sh on Linux and macOS, PowerShell/cmd on Windows; runs with the current user's host permissions, is not sandboxed, and cannot be undone; **off by default** |
 | `--skills DIR` | `load_skill` | markdown skill library; defaults to `$LITHE_HOME/skills` when it exists, `--skills ""` disables |
-| `--download` | `download_file` | SSRF-guarded, size-capped network fetch |
-| `--vision` | `image_info` / `analyze_image` | image probe is stdlib-only; analysis routes one vision call to the main endpoint |
-| `--document` | `document_info` / `analyze_document` | PDF/DOCX/XLSX/PPTX reading on the main endpoint; `/set document` toggles in-session |
+| `--download` / `--no-download` | `download_file` | SSRF-guarded, size-capped network fetch; **on by default** |
+| `--vision` / `--no-vision` | `image_info` / `analyze_image` | image probe is stdlib-only; analysis routes one vision call to the main endpoint; **on by default** |
+| `--document` / `--no-document` | `document_info` / `analyze_document` | PDF/DOCX/XLSX/PPTX reading on the main endpoint; **on by default**; `/set document` toggles in-session |
 | `--document-format` | (dialect for `analyze_document`) | `inline-file` (OpenRouter family) / `files-api` (strict OpenAI upload) / `none` (probe only); default: profile field `document_format`, else provider preset |
 | `--max-cost USD` | (run budget) | the turn ends `budget_exceeded` once cumulative cost crosses it; on endpoints reporting no `usage.cost` add a profile `pricing` table (`{"prompt": 3, "completion": 15}` per 1M) — the preset providers' known prices work too |
 | `--max-tokens N` | (run budget) | cumulative token budget for the turn; `--max-output-tokens N` is the different per-call cap |
@@ -322,9 +363,9 @@ keys, inline wizard validation, and persistent history.
   from lithe.
 - The Textual screen is tested headlessly with `App.run_test()` pilots
   (turns, F2/F3/F4, history, completion) — real interaction tests that
-  also run on Windows; its pure builders (sidebar/header/footer markup,
-  completion suggestions) and the shared `TuiState` event folding have
-  direct unit tests.
+  also run on Windows; its pure builders (sidebar sections, prompt info
+  line, Markdown rendering, completion suggestions) and the shared
+  `TuiState` event folding have direct unit tests.
 - `python -m lithe_cli` works alongside the `lithe` console script.
 
 ## License

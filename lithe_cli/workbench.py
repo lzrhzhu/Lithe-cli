@@ -167,7 +167,8 @@ class Workbench:
         reset to None when the profile doesn't set it — switching profiles
         means switching truths, not layering one vendor's fields over
         another's endpoint. A profile without a model keeps the current
-        one (upsert always saves one, but hand-edited files may not).
+        one (the F7 form leaves the model optional, and hand-edited
+        files may lack it too).
         """
         pinned = self.cfg.pinned_keys
         if "api_key" not in pinned:
@@ -214,7 +215,10 @@ class Workbench:
         meta = self.current.get("meta") or {}
         pinned = self.cfg.pinned_keys
         if meta.get("profile") and "profile" not in pinned:
-            endpoint = self.profiles.endpoint(meta["profile"])  # may be gone
+            try:
+                endpoint = self.profiles.endpoint(meta["profile"])
+            except SystemExit:  # profile deleted after the session ran
+                endpoint = {}
             if endpoint:
                 self._apply_endpoint(endpoint)
                 self.cfg.profile = meta["profile"]
@@ -324,35 +328,43 @@ class Workbench:
         under (profile name). Numbering follows this order, so the
         favorites are always the first few numbers — the whole point of
         the quick lane.
+
+        The quick lanes and the profile groups are complementary views,
+        **not** a partition: a model may appear as a qualified ref in
+        ★常用/最近 *and* in its profile's group. The group is the
+        provider's catalog and must stay complete — without this, any
+        cached model that also sits in a favorite or a session-recent
+        would be deduplicated out of its group, collapsing it to just
+        the current model. Deduplication applies only inside the quick
+        lanes (a favorited recent skips the 最近 row) and inside each
+        group (the saved default vs the cached list).
         """
         favorites = set(self.profiles.favorites())
         entries: list[dict] = []
-        listed: set[tuple[str, str]] = set()
 
         def _add(profile: str, model: str, section: str) -> None:
-            pair = (profile, model)
-            if pair in listed:
-                return
-            listed.add(pair)
             entries.append({"profile": profile, "model": model,
                             "section": section, "group": profile,
                             "favorite": f"{profile}:{model}" in favorites})
 
+        quick: set[tuple[str, str]] = set()
         for ref in favorites:
             profile, _, model = ref.partition(":")
             _add(profile, model, "fav")
+            quick.add((profile, model))
         if fav_only:
             return entries
         current_pair = (self.cfg.profile, self.cfg.model)
         for pair in self.recent_models():
-            if f"{pair[0]}:{pair[1]}" in favorites:
+            if pair in quick:
                 continue
             if pair == current_pair:
-                # the current model renders under its own profile group (●);
-                # duplicating it in 最近 would also swallow that group's
-                # only entry — and with it the group header.
+                # the current model renders under its own profile group (●)
+                # and every group row stays listed below — a duplicate in
+                # 最近 is noise, not information.
                 continue
             _add(pair[0], pair[1], "recent")
+            quick.add(pair)
         current = self.cfg.profile
         names = [current] if current else []
         names += [n for n in self.profiles.names() if n != current]
@@ -361,9 +373,13 @@ class Workbench:
                 ep = self.profiles.endpoint(name)
             except SystemExit:
                 continue
-            if ep.get("model"):
-                _add(name, ep["model"], "profile")
-            for m in ep.get("cached_models") or []:
+            grouped: set[str] = set()
+            catalog = ([ep["model"]] if ep.get("model") else []) \
+                + list(ep.get("cached_models") or [])
+            for m in catalog:
+                if m in grouped:
+                    continue
+                grouped.add(m)
                 _add(name, m, "profile")
         return entries
 
@@ -464,9 +480,10 @@ class Workbench:
                 self.current["id"], {"profile": name, "model": self.cfg.model}
             )
         dialect = self._endpoint_dialect(endpoint)
+        model_note = self.cfg.model or "未设置模型"
         result.say(
             "ok", f"档案已切换为 {name}{f'（{dialect}）' if dialect else ''}"
-            f" · {self.cfg.model}，下一轮生效"
+            f" · {model_note}，下一轮生效"
         )
         return result
 
@@ -479,7 +496,10 @@ class Workbench:
         re-adopts its fields so provider/base_url edits take effect on
         the next turn; other profiles are saved without switching.
         ``provider == "none"`` (the form's sentinel) stores no preset and
-        explicitly clears one the profile previously had.
+        explicitly clears one the profile previously had. *model* is
+        optional — a blank value stores no default and clears one the
+        profile previously had (the ``/models`` listing fills the choice
+        later), and switching keeps the session's current model alive.
         """
         result = ActionResult(changed=True)
         clean = (name or "").strip()
@@ -488,9 +508,8 @@ class Workbench:
         if not clean:
             result.say("err", "档案名不能为空")
             return result
-        if not ((base_url or "").strip() and (api_key or "").strip()
-                and (model or "").strip()):
-            result.say("err", "base_url / API key / 模型 均不能为空")
+        if not ((base_url or "").strip() and (api_key or "").strip()):
+            result.say("err", "base_url / API key 均不能为空")
             return result
         existed = clean in self.profiles.names()
         had_provider = None
@@ -514,6 +533,8 @@ class Workbench:
         if not existed:
             switch = self.set_profile(clean)
             result.messages.extend(switch.messages)
+            if not (model or "").strip():
+                result.say("dim", "（档案未设默认模型：F4 或 /models 拉取列表后选择）")
             return result
         if clean == self.cfg.profile:
             try:
@@ -556,6 +577,31 @@ class Workbench:
             except SystemExit:
                 pass
             result.say("dim", "下一轮生效")
+        return result
+
+    def delete_profile(self, name: str) -> ActionResult:
+        """Remove a stored profile (F7 › d), favorites dying with it.
+
+        Deleting the *current* profile falls back to the store's next
+        active one (its endpoint truth re-adopted); when none remain the
+        session keeps its endpoint fields with no profile name attached
+        (env-style) — nothing interrupts a running turn.
+        """
+        result = ActionResult(changed=True)
+        if name not in self.profiles.names():
+            result.say("err", f"未知档案 {name}")
+            return result
+        self.profiles.delete(name)
+        result.say("ok", f"档案 {name} 已删除")
+        if name == self.cfg.profile:
+            remaining = self.profiles.names()
+            if remaining:
+                switch = self.set_profile(
+                    self.profiles.active_name() or remaining[0])
+                result.messages.extend(switch.messages)
+            else:
+                self.cfg.profile = None
+                result.say("dim", "没有其他档案；本会话沿用当前端点字段（env 模式）")
         return result
 
     async def fetch_model_list(self, scope: str = "current") -> ActionResult:
@@ -610,6 +656,7 @@ class Workbench:
             self.profiles.cache_models(self.cfg.profile, models)
         preview = "、".join(models[:8]) + ("…" if len(models) > 8 else "")
         result.say("ok", f"端点返回 {len(models)} 个模型：{preview}")
+        result.say("dim", "（仅缓存进当前档案；/models all 并行刷新全部档案）")
         return result
 
     # -- turns ------------------------------------------------------------------

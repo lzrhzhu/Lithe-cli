@@ -40,16 +40,20 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--workspace", help="agent workspace dir (default: cwd)")
         sp.add_argument("--store", help="run store dir (default: ~/.lithe/runs)")
         sp.add_argument("--user", help="user id for the store (default: cli)")
-        sp.add_argument("--download", action="store_true",
-                        help="grant the agent download_file (network fetch)")
+        sp.add_argument(
+            "--download", action=argparse.BooleanOptionalAction, default=True,
+            help="grant download_file (SSRF-guarded network fetch); on by "
+                 "default (--no-download disables)",
+        )
         sp.add_argument(
             "--code", action="store_true",
             help="grant run_code/run_file (sandboxed Python; "
-            "bwrap when available, passthrough otherwise)",
+            "bwrap when available, passthrough otherwise); off by default",
         )
         sp.add_argument(
             "--shell", action="store_true",
-            help="grant run_command (native shell with current-user host access)",
+            help="grant run_command (native shell with current-user host "
+                 "access); off by default",
         )
         sp.add_argument(
             "--skills", metavar="DIR",
@@ -58,12 +62,16 @@ def build_parser() -> argparse.ArgumentParser:
         )
         sp.add_argument("--mcp", metavar="SPEC",
                         help="MCP servers as JSON array/object or @file (env LITHE_MCP)")
-        sp.add_argument("--vision", action="store_true",
-                        help="grant image_info/analyze_image (vision on the main endpoint)")
         sp.add_argument(
-            "--document", action="store_true",
-            help="grant document_info/analyze_document "
-            "(PDF/OOXML reading on the main endpoint)",
+            "--vision", action=argparse.BooleanOptionalAction, default=True,
+            help="grant image_info/analyze_image (vision on the main "
+                 "endpoint); on by default (--no-vision disables)",
+        )
+        sp.add_argument(
+            "--document", action=argparse.BooleanOptionalAction, default=True,
+            help="grant document_info/analyze_document (PDF/OOXML reading "
+                 "on the main endpoint); on by default (--no-document "
+                 "disables)",
         )
         sp.add_argument(
             "--subagents", action=argparse.BooleanOptionalAction, default=True,

@@ -42,14 +42,20 @@ def test_tools_command(tmp_path, capsys):
         "list_files",
         "apply_patch",
         "update_todos",
+        # 分析/下载类能力默认开启
+        "download_file",
+        "image_info",
+        "analyze_image",
+        "document_info",
+        "analyze_document",
     ):
         assert name in out, f"{name} missing from tools listing"
-    # download stays opt-in
-    assert "download_file" not in out
+    # 执行面仍然默认关闭
     assert "run_command" not in out
+    assert "run_code" not in out
 
 
-def test_tools_command_with_download(tmp_path, capsys):
+def test_tools_command_no_download(tmp_path, capsys):
     from lithe_cli.main import main
 
     rc = main(
@@ -59,11 +65,16 @@ def test_tools_command_with_download(tmp_path, capsys):
             str(tmp_path),
             "--store",
             str(tmp_path / "s"),
-            "--download",
+            "--no-download",
+            "--no-vision",
+            "--no-document",
         ]
     )
     assert rc == 0
-    assert "download_file" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    for name in ("download_file", "image_info", "analyze_image",
+                 "document_info", "analyze_document"):
+        assert name not in out, f"{name} should be gone with --no-* flags"
 
 
 def test_tools_command_with_shell(tmp_path, capsys):
@@ -327,7 +338,11 @@ def test_tui_done_records_turn_duration():
                     "duration_s": 65.0})
     assert state.last_turn_duration == 65.0
     assert "1m05s" in state.status
-    assert "本轮耗时 1m05s" in sidebar_markup(state)
+    # 时长不再进侧栏：它由对话区的 thinking/meta 通道在输出下方呈现
+    # （test_ttui.py::test_thinking_lane_spins_expands_and_settles 覆盖），
+    # 侧栏没有运行段。
+    assert "本轮耗时" not in sidebar_markup(state)
+    assert "▾ 运行" not in sidebar_markup(state)
 
 
 def test_system_prompt_mentions_capabilities(tmp_path):
@@ -969,15 +984,18 @@ def _pty_drain(fd) -> bytes:
     return out
 
 
-def test_footer_does_not_duplicate_sidebar_usage():
-    from lithe_cli.ttui import footer_text
+def test_prompt_info_stays_config_only():
+    from lithe_cli.ttui import prompt_info_text
     from lithe_cli.tui import TuiState
 
     state = TuiState("m", "/ws", 5)
-    state.on_event({"type": "done", "status": "done", "steps": 3, "tokens": 120, "cost": 0.5})
-    line = footer_text(state)
-    assert "完成" in line
+    state.on_event({"type": "done", "status": "done", "steps": 3,
+                    "tokens": 120, "cost": 0.5})
+    line = prompt_info_text(state)
+    assert "m" in line
+    # 用量数字归侧栏/思考通道，信息行只有端点配置
     assert "tok" not in line and "$" not in line and "step" not in line
+    assert "完成" not in line
 
 
 def test_file_tools_report_line_delta_in_feed(tmp_path):

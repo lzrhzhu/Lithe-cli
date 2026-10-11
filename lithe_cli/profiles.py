@@ -263,11 +263,16 @@ class ProfileStore:
         # Start from the existing endpoint so fields the caller doesn't
         # know about — provider, reasoning_effort, document_format, a
         # hand-tuned context_window — survive a re-config instead of being
-        # silently erased. The caller's triple always overwrites.
+        # silently erased. The caller's triple always overwrites; a blank
+        # model explicitly clears the stored default (the F7 form makes
+        # the model optional — /models listings fill the choice later).
         endpoint = dict(data["profiles"].get(name) or {})
         endpoint.update({"api_key": api_key.strip(),
-                         "base_url": base_url.strip(),
-                         "model": model.strip()})
+                         "base_url": base_url.strip()})
+        if model.strip():
+            endpoint["model"] = model.strip()
+        else:
+            endpoint.pop("model", None)
         if context_window:
             endpoint["context_window"] = int(context_window)
         if provider and provider.strip():

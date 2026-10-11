@@ -61,7 +61,17 @@ class HistoryInput(TextArea):
         Binding("tab", "accept_suggestion", "采纳", show=False,
                 priority=True),
         Binding("enter", "submit", "发送", show=False, priority=True),
+        # Newline: most terminals cannot send a distinguishable Ctrl+Enter
+        # — Windows ones deliver a plain CR (indistinguishable from Enter)
+        # and LF arrives as Ctrl+J (Textual's name for \n). Only
+        # enhanced/kitty-reporting terminals emit a real ctrl+enter, and
+        # shift+enter needs that reporting too. Bind all three; each is
+        # inert wherever the terminal never delivers it.
+        Binding("ctrl+j", "insert_newline", "换行", show=False,
+                priority=True),
         Binding("ctrl+enter", "insert_newline", "换行", show=False,
+                priority=True),
+        Binding("shift+enter", "insert_newline", "换行", show=False,
                 priority=True),
     ]
 
@@ -347,6 +357,125 @@ class SubagentCard(Vertical):
 
 # -- pickers ---------------------------------------------------------------------
 
+class SectionHeader(Static):
+    """A sidebar section heading. Clicking it toggles the section's body
+    (the app's ``on_click`` routes by :attr:`section``); the ▾/▸ arrow and
+    the folded-in summary live in the label, not the widget."""
+
+    def __init__(self, *args, section: str = "", **kwargs):
+        self.section = section
+        super().__init__(*args, **kwargs)
+
+
+class FoldHead(Static):
+    """The clickable heading of a :class:`FoldRow` (routed by on_click)."""
+
+
+class FoldRow(Vertical):
+    """A collapsible feed block: one always-visible heading line — click
+    toggles — and a body that only renders expanded. The heading carries
+    an ▸/▾ affordance and the row's label; the body is verbatim text,
+    never markup. (:class:`ThinkingRow` is the live-spinning flavor the
+    conversation's thinking lane uses.)"""
+
+    def __init__(self, label: str, body: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.label = label
+        self.body_text = body
+        self.expanded = False
+
+    def compose(self) -> ComposeResult:
+        yield FoldHead("", classes="fold-head", markup=True)
+        yield Static("", classes="fold-body", markup=False)
+
+    def on_mount(self) -> None:
+        self._sync_view()
+
+    def _sync_view(self) -> None:
+        # NOT named _render: that's Widget's internal Visual producer in
+        # Textual — overriding it hands the renderer a None visual.
+        arrow = "▾" if self.expanded else "▸"
+        self.query_one(".fold-head", FoldHead).update(
+            f"[dim]{arrow}[/] [i]{self.label}[/]")
+        body = self.query_one(".fold-body", Static)
+        body.update(self.body_text if self.expanded else "")
+        body.display = self.expanded
+
+    def toggle(self) -> None:
+        self.expanded = not self.expanded
+        self._sync_view()
+
+
+class ThinkingRow(FoldRow):
+    """The conversation's live thinking lane (mounted once, below the
+    feed and above the streaming slot).
+
+    While a turn runs the heading shows a rotating spinner glyph +
+    "thinking" (plus the live elapsed time); a click toggles the body,
+    which carries the turn's accumulated REASONING digests. Once the
+    turn ends it settles under the output: a "thought · Ns" fold when
+    thinking content exists, a dim "model · Ns" meta line otherwise —
+    either way the turn's duration sits below its output. The next
+    run_start resets the lane (collapsed, spinner again).
+    """
+
+    # Classic braille spinner: distinct frames at terminal speeds.
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, **kwargs):
+        super().__init__("thinking", **kwargs)
+        self.active = False
+        self.frame = 0
+        self.tail = ""
+        self.meta = False  # settled without content: a plain line, no fold
+        self.display = False  # nothing to show until a turn starts
+
+    def _sync_view(self) -> None:
+        body = self.query_one(".fold-body", Static)
+        head = self.query_one(".fold-head", FoldHead)
+        if self.active:
+            glyph = self.FRAMES[self.frame % len(self.FRAMES)]
+            head.update(f"{glyph} [i]{self.label}[/i][dim]{self.tail}[/]")
+            body.update(self.body_text if self.expanded else "")
+            body.display = self.expanded
+        elif self.meta:
+            head.update(f"[dim]{self.label}{self.tail}[/]")
+            body.update("")
+            body.display = False
+        else:
+            arrow = "▾" if self.expanded else "▸"
+            head.update(
+                f"[dim]{arrow}[/] [i]{self.label}[/i][dim]{self.tail}[/]")
+            body.update(self.body_text if self.expanded else "")
+            body.display = self.expanded
+
+    def set_live(self, elapsed: str = "") -> None:
+        """Enter/refresh the running state: spinner + "thinking" + elapsed."""
+        self.active = True
+        self.meta = False
+        self.display = True
+        self.tail = f" · {elapsed}" if elapsed else ""
+        self._sync_view()
+
+    def settle(self, label: str, tail: str = "", meta: bool = False) -> None:
+        """The turn ended: a static fold, or a dim meta line when there is
+        no thinking content to fold (``meta=True`` ignores clicks)."""
+        self.active = False
+        self.meta = meta
+        self.display = True
+        self.label = label
+        self.tail = tail
+        if meta:
+            self.expanded = False
+        self._sync_view()
+
+    def toggle(self) -> None:
+        if self.meta:  # a plain meta line has nothing to unfold
+            return
+        self.expanded = not self.expanded
+        self._sync_view()
+
+
 class PickerModal(ModalScreen):
     """Generic list picker: Enter selects, letters run extra actions,
     Esc/q closes. ``items`` are (payload, markup label) tuples."""
@@ -358,6 +487,11 @@ class PickerModal(ModalScreen):
         Binding("d", "letter('d')", show=False),
         Binding("r", "letter('r')", show=False),
         Binding("s", "letter('s')", show=False),
+        # endpoint picker: edit the focused profile / swap its provider
+        # type. Like the others, gated by each picker's letter_actions
+        # and inert wherever the key is not claimed.
+        Binding("e", "letter('e')", show=False),
+        Binding("p", "letter('p')", show=False),
         # model picker: favorite the focused row / favorites-only filter.
         # Gated by each picker's letter_actions, inert elsewhere.
         Binding("a", "letter('a')", show=False),
@@ -625,7 +759,8 @@ class FormModal(ModalScreen):
 # -- command approval --------------------------------------------------------
 
 class ConfirmModal(ModalScreen):
-    """y/n on a destructive run_command: y allows, n/Esc refuses."""
+    """y/n on a destructive action (run_command guard, profile deletion):
+    y allows, n/Esc refuses."""
 
     BINDINGS = [
         Binding("y", "allow", "允许"),
@@ -633,13 +768,14 @@ class ConfirmModal(ModalScreen):
         Binding("escape", "refuse", "拒绝", show=False),
     ]
 
-    def __init__(self, command: str):
+    def __init__(self, command: str, title: str = "⚠ 破坏性命令需确认"):
         super().__init__()
         self.command = command
+        self.title = title
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker"):
-            yield Static("⚠ 破坏性命令需确认", id="picker-title")
+            yield Static(self.title, id="picker-title")
             # 命令行与按键说明各用各的 id：Textual 要求同一父级下 id 唯一，
             # 早前两处都叫 picker-hint，push_screen 时直接 MountError。
             yield Static(self.command, id="picker-command")

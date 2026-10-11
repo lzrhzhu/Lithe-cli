@@ -108,6 +108,7 @@ def test_delegation_runs_and_records_child_messages(tmp_path, capsys):
 def test_roster_adapts_to_capability_flags(tmp_path):
     cfg = make_config(tmp_path, [])
     cfg.subagents = True
+    cfg.download = False  # download 现默认开启；这里验证不含 operator 的基线
     reg = build_registry(cfg)
     host = build_host(cfg, reg)
     engine = register_subagents(cfg, host, reg)

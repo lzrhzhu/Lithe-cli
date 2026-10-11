@@ -239,6 +239,33 @@ def test_model_listing_favorites_first_and_qualified_pick(tmp_path, monkeypatch)
     assert wb.cfg.base_url == "https://api.anthropic.com/v1"
 
 
+def test_model_group_keeps_full_catalog_despite_quick_lanes(
+        tmp_path, monkeypatch):
+    """回归：收藏与会话最近（★常用/最近 快速通道）曾把分组里的模型
+    全局去重掉，provider 分组只剩当前模型一条（甚至整组消失）。分组
+    是档案的目录，必须完整——快速通道与分组是互补视图，不是分区。"""
+    wb = _multi_provider_wb(tmp_path, monkeypatch)
+    # anthropic 缓存 [claude-sonnet-4, claude-opus-4]，全部进快速通道：
+    wb.profiles.toggle_favorite("anthropic:claude-sonnet-4")   # → ★常用
+    wb.dispatch("/model anthropic:claude-opus-4")              # 会话 A meta → 最近
+    wb.new_session()                                           # 会话 B（更新）
+    wb.dispatch("/model zhipu:glm-4.6")                        # 切回 zhipu（当前）
+    entries = wb.model_entries()
+    group = {e["model"] for e in entries
+             if e["section"] == "profile" and e["group"] == "anthropic"}
+    assert group == {"claude-sonnet-4", "claude-opus-4"}, \
+        "分组不得被收藏/最近去重掏空"
+    # 快速通道照常工作：收藏在 ★，另一个在 最近
+    assert any(e["section"] == "fav" and e["model"] == "claude-sonnet-4"
+               for e in entries)
+    assert any(e["section"] == "recent" and e["model"] == "claude-opus-4"
+               for e in entries)
+    # 分组内部仍去重：档案默认模型与缓存重叠时只列一次
+    zhipu_group = [e["model"] for e in entries
+                   if e["section"] == "profile" and e["group"] == "zhipu"]
+    assert zhipu_group == ["glm-4.6"]
+
+
 def test_model_qualified_ref_switches_profile(tmp_path, monkeypatch):
     wb = _multi_provider_wb(tmp_path, monkeypatch)
     wb.dispatch("/model anthropic:claude-opus-4")
@@ -424,6 +451,9 @@ def test_set_bool_toggle_and_explicit_values(tmp_path):
     r = wb.dispatch("/set shell")  # 不带值 = 切换
     assert wb.cfg.shell is False
 
+    # vision 等分析能力现在默认开启：先关再开，覆盖双向翻转
+    r = wb.dispatch("/set vision 0")
+    assert wb.cfg.vision is False and r.messages[0][0] == "ok"
     r = wb.dispatch("/set vision true")
     assert wb.cfg.vision is True and r.messages[0][0] == "ok"
     r = wb.dispatch("/set vision 0")
@@ -573,6 +603,47 @@ def test_save_profile_validation_and_bad_name(tmp_path, monkeypatch):
     assert wb.save_profile("b", "none", "", "k", "m").messages[0][0] == "err"
     assert wb.save_profile("bad name!", "none", "https://x", "k",
                            "m").messages[0][0] == "err"
+
+
+def test_save_profile_blank_model_optional(tmp_path, monkeypatch):
+    """模型非必填：/models 拉取后再选，新建/编辑都能留空。"""
+    wb = _wb_home(tmp_path, monkeypatch)
+    r = wb.save_profile("bare", "none", "https://bare.example/api", "sk", "")
+    assert r.messages[0][0] == "ok"
+    assert wb.cfg.profile == "bare"
+    assert "model" not in wb.profiles.endpoint("bare")
+    assert any("/models" in t for _, t in r.messages)
+    # 编辑清空模型 → 存储的默认模型一并清除
+    wb.save_profile("bare", "none", "https://bare.example/api", "sk", "m1")
+    assert wb.profiles.endpoint("bare")["model"] == "m1"
+    wb.save_profile("bare", "none", "https://bare.example/api", "sk", "")
+    assert "model" not in wb.profiles.endpoint("bare")
+
+
+def test_delete_profile_current_falls_back_to_next_active(tmp_path, monkeypatch):
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("a", "https://a.example/api", "sk-a", "m-a")
+    wb.profiles.upsert("b", "https://b.example/api", "sk-b", "m-b")
+    wb.set_profile("b")
+    r = wb.delete_profile("b")
+    assert "b" not in wb.profiles.names()
+    assert wb.cfg.profile == "a"
+    assert wb.cfg.base_url == "https://a.example/api"
+    assert wb.cfg.model == "m-a"
+    assert any("已删除" in t for _, t in r.messages)
+
+
+def test_delete_profile_last_one_keeps_endpoint_fields(tmp_path, monkeypatch):
+    """删掉最后一个档案：会话沿用端点字段（env 模式），不中断任何东西。"""
+    wb = _wb_home(tmp_path, monkeypatch)
+    wb.profiles.upsert("solo", "https://s.example/api", "sk", "m")
+    wb.set_profile("solo")
+    r = wb.delete_profile("solo")
+    assert wb.profiles.names() == []
+    assert wb.cfg.profile is None
+    assert wb.cfg.base_url == "https://s.example/api"
+    assert any("env" in t for _, t in r.messages)
+    assert wb.delete_profile("ghost").messages[0][0] == "err"
 
 
 def test_change_profile_provider_current_and_clear(tmp_path, monkeypatch):
