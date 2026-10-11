@@ -29,7 +29,8 @@ def test_version_flag(capsys):
     assert "lithe" in out
 
 
-def test_tools_command(tmp_path, capsys):
+def test_tools_command(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("LITHE_HOME", str(tmp_path / "home"))  # 无档案 → 结果与机器无关
     from lithe_cli.main import main
 
     rc = main(["tools", "--workspace", str(tmp_path), "--store", str(tmp_path / "s")])
@@ -47,9 +48,16 @@ def test_tools_command(tmp_path, capsys):
         "image_info",
         "analyze_image",
         "document_info",
-        "analyze_document",
     ):
         assert name in out, f"{name} missing from tools listing"
+    # analyze_document 还需要档案/预设给出 document_format（inline-file /
+    # files-api）；无端点配置时只注册确定性探针，不算失败
+    assert "analyze_document" not in out
+    rc = main(["tools", "--workspace", str(tmp_path),
+               "--store", str(tmp_path / "s"),
+               "--document-format", "inline-file"])
+    assert rc == 0
+    assert "analyze_document" in capsys.readouterr().out
     # 执行面仍然默认关闭
     assert "run_command" not in out
     assert "run_code" not in out
