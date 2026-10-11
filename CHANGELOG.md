@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+## 0.3.1 (2026-10-11)
+
+Renumbered from the retired 0.3.0: that filename had previously been
+used by a deleted upload, and PyPI never reuses them.
+
 ## 0.3.0 (2026-10-11)
+
+(never published — burned by PyPI's file-name reuse rule; see 0.3.1)
 
 - **fix: profile model is optional end-to-end** — a blank model in the
   F7 form (or `config`) clears the stored default instead of saving an
